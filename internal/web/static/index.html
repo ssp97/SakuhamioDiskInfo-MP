@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrystalDiskInfo MP</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="plain">
+  <div class="page">
+    <main class="window" id="window">
+      <nav class="menubar">
+        <div class="menu-item">
+          <button>文件</button>
+          <div class="menu-dropdown">
+            <button id="connect">连接服务器...</button>
+            <button id="popup">弹出窗口</button>
+            <button id="refresh">刷新</button>
+          </div>
+        </div>
+      </nav>
+
+      <section class="disk-strip">
+        <button class="nav-disk" id="preDisk" title="上一页">◀</button>
+        <div class="disk-buttons" id="diskButtons"></div>
+        <button class="nav-disk" id="nextDisk" title="下一页">▶</button>
+      </section>
+
+      <section class="main-area">
+        <section class="panel">
+          <h1 id="model">正在读取磁盘信息...</h1>
+
+          <div class="summary">
+            <aside class="status-box">
+              <div class="status-label">健康状态</div>
+              <button class="health unknown" id="health">未知</button>
+              <div class="status-label">温度</div>
+              <button class="temperature" id="temperature">-- °C</button>
+              <button class="life" id="life"></button>
+            </aside>
+
+            <div class="fields">
+              <div class="field"><span>固件</span><output id="firmware"></output></div>
+              <div class="field"><span>缓冲区大小</span><output id="bufferSize"></output></div>
+              <div class="field"><span>序列号</span><output id="serial"></output></div>
+              <div class="field"><span>NV Cache 大小</span><output id="nvCacheSize"></output></div>
+              <div class="field"><span>接口</span><output id="protocol"></output></div>
+              <div class="field"><span>转速</span><output id="rotation"></output></div>
+              <div class="field"><span>传输模式</span><output id="transfer"></output></div>
+              <div class="field"><span>通电次数</span><output id="powerCount"></output></div>
+              <div class="field"><span>驱动器号</span><output id="letters"></output></div>
+              <div class="field"><span>通电时间</span><output id="powerHours"></output></div>
+              <div class="field wide"><span>标准</span><output id="standard"></output></div>
+              <div class="field wide"><span>支持功能</span><output id="features"></output></div>
+              <div class="field"><span>主机总计读取</span><output id="hostReads"></output></div>
+              <div class="field"><span>主机总计写入</span><output id="hostWrites"></output></div>
+            </div>
+          </div>
+
+          <section class="smart-area">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>ID</th>
+                  <th>属性名称</th>
+                  <th>当前</th>
+                  <th>最差</th>
+                  <th>阈值</th>
+                  <th>原始值</th>
+                </tr>
+              </thead>
+              <tbody id="attributes"></tbody>
+            </table>
+          </section>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

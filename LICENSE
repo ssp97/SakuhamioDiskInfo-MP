@@ -1,0 +1,92 @@
+CrystalDiskInfo MP — Dual License
+==================================
+
+This project is licensed under two different licenses depending on the component:
+
+  • Web frontend (bin/static/):   GNU General Public License v3.0 (GPL-3.0)
+  • Go backend (cmd/, internal/): MIT License
+
+See the full license texts below.
+
+-------------------------------------------------------------------------------
+CREDITS
+-------------------------------------------------------------------------------
+
+CrystalDiskInfo
+  Copyright (C) 2008-2024 hiyohiyo / Crystal Dew World
+  https://crystalmark.info/
+  Licensed under the MIT License.
+
+  The UI design, theme system, language files, Shizuku artwork, and overall
+  look-and-feel of this project are inspired by and derived from CrystalDiskInfo.
+
+smartmontools
+  Copyright (C) 2002-2024 Bruce Allen, Christian Franke, and contributors
+  https://www.smartmontools.org/
+  Licensed under the GNU General Public License v2.0.
+
+  S.M.A.R.T. attribute definitions, NVMe Health Information Log parsing, and
+  low-level drive I/O patterns in the internal/smart package reference
+  smartmontools' implementation.
+
+-------------------------------------------------------------------------------
+MIT License (Go backend: cmd/, internal/)
+-------------------------------------------------------------------------------
+
+Copyright (c) 2024 CrystalDiskInfo MP contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+GNU General Public License v3.0 (Web frontend: bin/static/)
+-------------------------------------------------------------------------------
+
+Copyright (C) 2024 CrystalDiskInfo MP contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+-------------------------------------------------------------------------------
+                    GNU GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+                            Preamble
+
+  The GNU General Public License is a free, copyleft license for
+software and other kinds of works.
+
+  For the terms and conditions for copying, distribution and
+modification, see <https://www.gnu.org/licenses/gpl-3.0.txt>.
+
+  The full text of the GNU GPL v3.0 is available at:
+  https://www.gnu.org/licenses/gpl-3.0.txt

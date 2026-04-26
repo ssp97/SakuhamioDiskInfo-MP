@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CrystalDiskInfo MP</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+    <div class="main-window">
+        <nav class="menubar">
+            <div class="menu-item">
+                <button>文件</button>
+                <div class="menu-dropdown">
+                    <button id="connect">连接服务器...</button>
+                    <button id="popup">弹出窗口</button>
+                    <button id="refresh">刷新</button>
+                    <button id="wake">唤醒并读取</button>
+                </div>
+            </div>
+            <div class="menu-item">
+                <button>主题</button>
+                <div class="menu-dropdown theme-menu">
+                    <select id="themeSelect"></select>
+                </div>
+            </div>
+        </nav>
+        <main class="window" id="window">
+            <section class="main-area">
+                <div class="character">
+                    <img class="copyright" id="copyright" alt="">
+                </div>
+                <section class="panel">
+                    <section class="disk-strip">
+                        <div class="disk-buttons" id="diskButtons"></div>
+                    </section>
+                    <div class="summary-block">
+                        <section class="model-strip">
+                            <button class="nav-disk" id="preDisk" title="上一页">◀</button>
+                            <h1 id="model">正在读取磁盘信息...</h1>
+                            <button class="nav-disk" id="nextDisk" title="下一页">▶</button>
+                        </section>
+
+                        <div class="summary">
+                            <div class="status-chibi"></div>
+                            <table class="fields">
+                                <thead>
+                                <tr>
+                                    <td></td>
+                                    <td style="width: 180px"></td>
+                                    <td></td>
+                                    <td style="width: 100px"></td>
+                                </tr>
+                                </thead>
+                                <tr>
+                                    <td>固件</td>
+                                    <td><output id="firmware"></output></td>
+                                    <td id="textHostReads">主机总计读取</td>
+                                    <td id="textBufferSize" style="display: none">缓冲区大小</td>
+                                    <td><output id="outputDual1"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>序列号</td>
+                                    <td><output id="serial"></output></td>
+                                    <td id="textHostWrites">主机总计写入</td>
+                                    <td id="textNVCachesize" style="display: none">NV Cache 大小</td>
+                                    <td><output id="outputDual2"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>接口</td>
+                                    <td><output id="protocol"></output></td>
+                                    <td>转速</td>
+                                    <td><output id="rotation"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>传输模式</td>
+                                    <td><output id="transfer"></output></td>
+                                    <td>通电次数</td>
+                                    <td><output id="powerCount"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>驱动器号</td>
+                                    <td><output id="letters"></output></td>
+                                    <td>通电时间</td>
+                                    <td><output id="powerHours"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>标准</td>
+                                    <td colspan="3"><output id="standard"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>支持功能</td>
+                                    <td colspan="3"><output id="features"></output></td>
+                                </tr>
+                                <tr>
+                                    <td>健康状态</td>
+                                    <td>
+                                        <button class="health unknown" id="health">未知</button>
+                                    </td>
+                                    <td>温度</td>
+                                    <td><button class="temperature" id="temperature">-- °C</button></td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+
+                    <section class="smart-area">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th></th>
+                                <th>ID</th>
+                                <th>属性名称</th>
+                                <th>当前</th>
+                                <th>最差</th>
+                                <th>阈值</th>
+                                <th>原始值</th>
+                            </tr>
+                            </thead>
+                            <tbody id="attributes"></tbody>
+                        </table>
+                    </section>
+                </section>
+            </section>
+        </main>
+    </div>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
