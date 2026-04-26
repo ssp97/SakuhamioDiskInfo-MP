@@ -1,1 +1,4 @@
-/bin/static/themes/
+/bin/static/themes/*
+!/bin/static/themes/themes.json
+!/bin/static/themes/Sakuhamio/
+!/bin/static/themes/Sakuhamio/**

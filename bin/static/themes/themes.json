@@ -1,0 +1,33 @@
+{
+  "Default": "Sakuhamio",
+  "DefaultDark": "Sakuhamio",
+  "Themes": {
+    "Sakuhamio": {
+      "name": "Sakuhamio",
+      "author": "ssp97",
+      "position": 1,
+      "glassAlpha": 128,
+      "colors": {
+        "LabelText": "#3D3D3D",
+        "ButtonText": "#3D3D3D",
+        "ListText1": "#3D3D3D",
+        "ListText2": "#6B6B6B",
+        "ListBk1": "#FFFAF8",
+        "ListBk2": "#F5F0EB",
+        "ListLine1": "#D0C8C4",
+        "ListLine2": "#E0D8D4"
+      },
+      "images": {
+        "Background": "SakuhamioBackground-300.webp",
+        "CharacterMain": "SakuhamioCharacterMain-portrait.png",
+        "CharacterMini": "SakuhamioCharacterMini-good.png",
+        "SDdiskStatusGood": "SakuhamioStatusGood.png",
+        "SDdiskStatusGood100": "SakuhamioStatusGood.png",
+        "SDdiskStatusCaution": "SakuhamioStatusCaution.png",
+        "SDdiskStatusBad": "SakuhamioStatusBad.png",
+        "SDdiskStatusUnknown": "SakuhamioStatusUnknown.png",
+        "ShizukuCopyright": "SakuhamioCopyright-100.webp"
+      }
+    }
+  }
+}

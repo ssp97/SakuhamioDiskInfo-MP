@@ -1,0 +1,1 @@
+Embedded theme assets can be added here.

@@ -234,6 +234,17 @@ function themeImage(themeName) {
   return next;
 }
 
+function findThemeAsset(images, ...keys) {
+  for (const key of keys) {
+    if (images[key]) return images[key];
+  }
+  for (const suffix of keys) {
+    const matched = Object.keys(images).find((key) => key.endsWith(suffix));
+    if (matched) return images[matched];
+  }
+  return "";
+}
+
 function applyTheme(theme) {
   if (!theme) return;
   saveThemeName(theme.name);
@@ -256,11 +267,24 @@ function applyTheme(theme) {
     themeImage(theme.parentTheme1),
     themeImage(theme.name),
   );
-  win.classList.toggle("theme-wide", Boolean(images.ShizukuBackground));
+  const backgroundImage = findThemeAsset(images, "Background", "ShizukuBackground");
+  const copyrightImage = findThemeAsset(images, "ShizukuCopyright", "Copyright");
+  const mainCharacterImage = findThemeAsset(images, "CharacterMain");
+  const mascotImage = findThemeAsset(images, "CharacterMini", "Mascot");
+  win.classList.toggle("theme-wide", Boolean(backgroundImage));
   win.classList.toggle("character-right", theme.position === 1);
   win.classList.toggle("character-left", theme.position !== 1);
   for (const key in images) win.style.setProperty(`--img-${key}`, imageURL(images[key]));
-  if (images.ShizukuCopyright) $("copyright").src = "themes/" + images.ShizukuCopyright;
+  if (backgroundImage) win.style.setProperty("--img-theme-background", imageURL(backgroundImage));
+  else win.style.removeProperty("--img-theme-background");
+  if (mainCharacterImage) $("characterMain").src = "themes/" + mainCharacterImage;
+  else $("characterMain").removeAttribute("src");
+  $("characterMain").style.display = mainCharacterImage ? "" : "none";
+  if (mascotImage) $("themeMascot").src = "themes/" + mascotImage;
+  else $("themeMascot").removeAttribute("src");
+  $("themeMascot").style.display = mascotImage ? "" : "none";
+  if (copyrightImage) $("copyright").src = "themes/" + copyrightImage;
+  else $("copyright").removeAttribute("src");
   updateThemeStatusImages(disks[current]?.health || "unknown", temperatureClass(disks[current]));
 }
 
