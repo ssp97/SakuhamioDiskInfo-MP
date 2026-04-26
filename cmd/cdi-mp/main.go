@@ -18,6 +18,9 @@ func main() {
 
 	collector := smart.NewCollector()
 	if err := collector.RequirePrivilege(); err != nil {
+		if relaunchElevated(err) {
+			return
+		}
 		log.Fatalf("%v", err)
 	}
 

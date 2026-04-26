@@ -1,0 +1,29 @@
+{
+  "Default": "Sakuhamio",
+  "DefaultDark": "Sakuhamio",
+  "Themes": {
+    "Sakuhamio": {
+      "name": "Sakuhamio",
+      "author": "ssp97",
+      "position": 1,
+      "colors": {
+        "LabelText": "#22304A",
+        "ButtonText": "#22304A",
+        "ListText1": "#2C3851",
+        "ListText2": "#4D5A70",
+        "ListBk1": "#FFFFFF",
+        "ListBk2": "#F7FAFF",
+        "ListLine1": "#DCE4F0",
+        "ListLine2": "#E8EEF7"
+      },
+      "images": {
+        "CharacterMain": "SakuhamioCharacterMain-webui-v2.png"
+      },
+      "webui": {
+        "assets": {
+          "characterMain": "Sakuhamio/SakuhamioCharacterMain-webui-v2.png"
+        }
+      }
+    }
+  }
+}
