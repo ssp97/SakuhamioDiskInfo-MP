@@ -152,7 +152,17 @@ func (s *Server) apiThemes(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	s.writeJSON(w, response{Themes: s.themes()})
+	themeFile := filepath.Join(staticRoot, "themes", "themes.json")
+	data, err := os.ReadFile(themeFile)
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(data)
+		return
+	}
+	s.writeJSON(w, map[string]any{
+		"Default": "Plain",
+		"Themes":  map[string]any{},
+	})
 }
 
 func (s *Server) Refresh(force bool, id string, index *int) {

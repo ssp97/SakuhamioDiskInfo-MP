@@ -212,8 +212,13 @@ function findTheme(themeName) {
 }
 
 async function loadThemes() {
-  const res = await fetch("themes/themes.json");
-  themeData = await res.json();
+  try {
+    const res = await fetch(apiBase ? `${apiBase}/api/themes` : "/api/themes");
+    themeData = await res.json();
+  } catch (err) {
+    console.error("Failed to load themes:", err);
+    themeData = { Default: "Plain", Themes: {} };
+  }
   const select = $("themeSelect");
   select.innerHTML = Object.keys(themeData.Themes || {}).map((theme) => `<option value="${escapeHTML(theme)}">${escapeHTML(theme)}</option>`).join("");
   const themeName = new URL(location.href).searchParams.get("theme") || loadThemeName();
