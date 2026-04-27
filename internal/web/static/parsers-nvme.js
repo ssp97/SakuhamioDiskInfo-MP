@@ -5,6 +5,9 @@ export function parseNVMe(rawDisk) {
   const basic = rawDisk.basic || {};
   const log = b64(rawDisk.raw?.smartHealthLog);
   const ctrl = b64(rawDisk.raw?.identifyController);
+  const features = ["S.M.A.R.T.", "TRIM", "VolatileWriteCache"];
+  if (rawDisk.isUsb) features.push("USB");
+  if (rawDisk.isRemovable) features.push("Removable");
   const disk = {
     raw: rawDisk,
     id: rawDisk.id,
@@ -18,7 +21,9 @@ export function parseNVMe(rawDisk) {
     rotationRate: "SSD",
     capacityBytes: rawDisk.capacityBytes,
     driveLetters: rawDisk.driveLetters || [],
-    features: ["S.M.A.R.T.", "TRIM", "VolatileWriteCache"],
+    isUsb: rawDisk.isUsb || false,
+    isRemovable: rawDisk.isRemovable || false,
+    features,
     powerOnHours: -1,
     powerOnCount: 0,
     hostReadsGB: 0,

@@ -130,6 +130,9 @@ func previousPath(index int, previous *RawDisk) string {
 }
 
 func readLinuxNVMe(path string, index int) (RawDisk, error) {
+	name := filepath.Base(path)
+	isUSB, isRemovable := detectLinuxUSB(name)
+
 	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return RawDisk{}, err
@@ -146,8 +149,8 @@ func readLinuxNVMe(path string, index int) (RawDisk, error) {
 	}
 	log := make([]byte, 512)
 
-	disk := RawDisk{ID: filepath.Base(path), Index: index, Path: path, SmartState: SmartStateUnavailable}
-	disk.DriveLetters = []string{filepath.Base(path)}
+	disk := RawDisk{ID: name, Index: index, Path: path, SmartState: SmartStateUnavailable, IsUSB: isUSB, IsRemovable: isRemovable}
+	disk.DriveLetters = []string{name}
 	parseNVMeIdentify(ctrl, ns, &disk)
 	if err := nvmeAdmin(f.Fd(), linuxNVMeAdminGetLog, 0xFFFFFFFF, linuxNVMeSmartHealthLog|(127<<16), log); err != nil {
 		disk.SmartState = SmartStateError
@@ -161,6 +164,9 @@ func readLinuxNVMe(path string, index int) (RawDisk, error) {
 }
 
 func readLinuxSATA(path string, index int, force bool, previous *RawDisk) (RawDisk, error) {
+	name := filepath.Base(path)
+	isUSB, isRemovable := detectLinuxUSB(name)
+
 	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return RawDisk{}, err
@@ -168,11 +174,14 @@ func readLinuxSATA(path string, index int, force bool, previous *RawDisk) (RawDi
 	defer f.Close()
 
 	identify, err := ataSGIO(f.Fd(), ataCmdIdentify, 0, 0, 0, 0, 0)
+	if err != nil && isUSB {
+		identify, err = ataSGIO12(f.Fd(), ataCmdIdentify, 0, 0, 0, 0, 0)
+	}
 	if err != nil {
 		return RawDisk{}, err
 	}
-	disk := RawDisk{ID: filepath.Base(path), Index: index, Path: path, SmartState: SmartStateUnavailable}
-	disk.DriveLetters = []string{filepath.Base(path)}
+	disk := RawDisk{ID: name, Index: index, Path: path, SmartState: SmartStateUnavailable, IsUSB: isUSB, IsRemovable: isRemovable}
+	disk.DriveLetters = []string{name}
 	parseATAIdentify(identify, &disk)
 	if !disk.Support.Smart {
 		disk.SmartState = SmartStateUnsupported
@@ -196,6 +205,9 @@ func readLinuxSATA(path string, index int, force bool, previous *RawDisk) (RawDi
 	}
 
 	smartData, err := ataSGIO(f.Fd(), ataCmdSmart, ataReadAttributes, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	if err != nil && disk.IsUSB {
+		smartData, err = ataSGIO12(f.Fd(), ataCmdSmart, ataReadAttributes, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	}
 	if err != nil {
 		mergePreviousSMART(&disk, previous)
 		disk.LastUpdateError = err.Error()
@@ -203,7 +215,10 @@ func readLinuxSATA(path string, index int, force bool, previous *RawDisk) (RawDi
 		return disk, nil
 	}
 	disk.Raw.SmartReadData = cloneBytes(smartData)
-	thresholds, _ := ataSGIO(f.Fd(), ataCmdSmart, ataReadThresholds, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	thresholds, err := ataSGIO(f.Fd(), ataCmdSmart, ataReadThresholds, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	if err != nil && disk.IsUSB {
+		thresholds, _ = ataSGIO12(f.Fd(), ataCmdSmart, ataReadThresholds, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	}
 	if len(thresholds) > 0 {
 		disk.Raw.SmartReadThreshold = cloneBytes(thresholds)
 	}
@@ -335,6 +350,42 @@ func ataSGIO(fd uintptr, command, feature, sectorCount, sectorNumber, cylinderLo
 	return data, nil
 }
 
+func ataSGIO12(fd uintptr, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi byte) ([]byte, error) {
+	data := make([]byte, ataSmartSize)
+	sense := make([]byte, linuxSenseBufferLen)
+	cdb := make([]byte, 12)
+	cdb[0] = 0xA1
+	cdb[1] = 0x04
+	cdb[2] = 0x0e
+	cdb[4] = feature
+	cdb[5] = sectorCount
+	cdb[6] = sectorNumber
+	cdb[7] = cylinderLo
+	cdb[8] = cylinderHi
+	cdb[9] = ataDriveHead
+	cdb[10] = command
+
+	hdr := linuxSGIOHdr{
+		InterfaceID:    int32('S'),
+		DxferDirection: linuxSGDXferFromDev,
+		CmdLen:         uint8(len(cdb)),
+		MxSbLen:        uint8(len(sense)),
+		DxferLen:       uint32(len(data)),
+		Dxferp:         uintptr(unsafe.Pointer(&data[0])),
+		Cmdp:           uintptr(unsafe.Pointer(&cdb[0])),
+		Sbp:            uintptr(unsafe.Pointer(&sense[0])),
+		Timeout:        10_000,
+	}
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, linuxSGIO, uintptr(unsafe.Pointer(&hdr)))
+	if errno != 0 {
+		return nil, errno
+	}
+	if hdr.Status != 0 || hdr.HostStatus != 0 || hdr.DriverStatus != 0 {
+		return nil, fmt.Errorf("SG_IO status=%d host=%d driver=%d", hdr.Status, hdr.HostStatus, hdr.DriverStatus)
+	}
+	return data, nil
+}
+
 func ataCheckPowerModeLinux(fd uintptr) (bool, error) {
 	sense := make([]byte, linuxSenseBufferLen)
 	cdb := make([]byte, 16)
@@ -383,4 +434,14 @@ func skipLinuxBlock(name string) bool {
 		return true
 	}
 	return false
+}
+
+func detectLinuxUSB(name string) (isUSB bool, isRemovable bool) {
+	if data, err := os.ReadFile("/sys/block/" + name + "/removable"); err == nil {
+		isRemovable = strings.TrimSpace(string(data)) == "1"
+	}
+	if target, err := os.Readlink("/sys/block/" + name); err == nil {
+		isUSB = strings.Contains(target, "/usb")
+	}
+	return
 }

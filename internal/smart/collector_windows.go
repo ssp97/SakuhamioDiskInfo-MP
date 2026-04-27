@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -31,6 +32,13 @@ const (
 	protocolTypeNvme                       = 3
 	nvmeDataTypeIdentify                   = 1
 	nvmeDataTypeLogPage                    = 2
+
+	propertyStorageDeviceProperty          = 0
+	busTypeUsb                             = 0x08
+
+	ioctlScsiPassThroughDirect             = 0x0004D014
+	scsiDataIn                             = 1
+	scsiMaxSenseLen                        = 32
 
 	ataFlagsDRDYRequired = 0x01
 	ataFlagsDataIn       = 0x02
@@ -134,6 +142,16 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 		disk.CapacityBytes = size
 	}
 
+	var descVendor, descProduct, descRevision, descSerial string
+	if busType, removable, vendor, product, revision, serial, err := queryStorageDeviceDescriptor(h); err == nil {
+		disk.IsUSB = busType == busTypeUsb
+		disk.IsRemovable = removable
+		descVendor = vendor
+		descProduct = product
+		descRevision = revision
+		descSerial = serial
+	}
+
 	if ctrl, ns, log, err := readNVMeWindows(h); err == nil {
 		size := disk.CapacityBytes
 		parseNVMeIdentify(ctrl, ns, &disk)
@@ -153,9 +171,22 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 		}
 	}
 
-	identify, err := ataPassThrough(h, ataCmdIdentify, 0, 0, 0, 0, 0)
+	identify, err := ataCommand(h, disk.IsUSB, ataCmdIdentify, 0, 0, 0, 0, 0)
 	if err != nil {
-		return disk, err
+		if !disk.IsUSB {
+			return disk, err
+		}
+		model := strings.TrimSpace(descVendor + " " + descProduct)
+		if model == "" {
+			model = "USB Mass Storage Device"
+		}
+		disk.Basic.Model = model
+		disk.Basic.Serial = descSerial
+		disk.Basic.Firmware = descRevision
+		disk.Basic.Protocol = "USB"
+		disk.SmartState = SmartStateUnsupported
+		disk.SmartMessage = "USB 设备不支持 S.M.A.R.T."
+		return disk, nil
 	}
 	size := disk.CapacityBytes
 	parseATAIdentify(identify, &disk)
@@ -183,7 +214,7 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 		}
 	}
 
-	smartData, err := ataPassThrough(h, ataCmdSmart, ataReadAttributes, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	smartData, err := ataCommand(h, disk.IsUSB, ataCmdSmart, ataReadAttributes, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
 	if err != nil {
 		mergePreviousSMART(&disk, previous)
 		disk.LastUpdateError = err.Error()
@@ -191,7 +222,7 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 		return disk, nil
 	}
 	disk.Raw.SmartReadData = cloneBytes(smartData)
-	thresholds, _ := ataPassThrough(h, ataCmdSmart, ataReadThresholds, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
+	thresholds, _ := ataCommand(h, disk.IsUSB, ataCmdSmart, ataReadThresholds, 1, 1, ataSmartCylinderLo, ataSmartCylinderHi)
 	if len(thresholds) > 0 {
 		disk.Raw.SmartReadThreshold = cloneBytes(thresholds)
 	}
@@ -394,6 +425,89 @@ func ataCheckPowerModeWindows(h syscall.Handle) (bool, error) {
 	}
 	sectorCount := buf[task+1]
 	return sectorCount == 0xff || sectorCount == 0x80, nil
+}
+
+func queryStorageDeviceDescriptor(h syscall.Handle) (busType uint32, removable bool, vendor, product, revision, serial string, err error) {
+	queryBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint32(queryBuf[0:], propertyStandardQuery)
+	binary.LittleEndian.PutUint32(queryBuf[4:], propertyStorageDeviceProperty)
+
+	outBuf := make([]byte, 1024)
+	if err := deviceIoControl(h, ioctlStorageQueryProperty, queryBuf, outBuf); err != nil {
+		return 0, false, "", "", "", "", err
+	}
+	busType = binary.LittleEndian.Uint32(outBuf[28:32])
+	removable = outBuf[10] != 0
+	vendor = descString(outBuf, 12)
+	product = descString(outBuf, 16)
+	revision = descString(outBuf, 20)
+	serial = descString(outBuf, 24)
+	return
+}
+
+func descString(buf []byte, offsetOff int) string {
+	off := int(binary.LittleEndian.Uint32(buf[offsetOff:]))
+	if off <= 0 || off >= len(buf) {
+		return ""
+	}
+	end := off
+	for end < len(buf) && buf[end] != 0 {
+		end++
+	}
+	return strings.TrimSpace(string(buf[off:end]))
+}
+
+func scsiAtaPassThrough16(h syscall.Handle, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi byte) ([]byte, error) {
+	const dataSize = 512
+
+	headerSize := 48
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		headerSize = 44
+	}
+
+	buf := make([]byte, headerSize+scsiMaxSenseLen+dataSize)
+
+	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
+	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
+	buf[8] = scsiDataIn
+	binary.LittleEndian.PutUint32(buf[12:], dataSize)
+	binary.LittleEndian.PutUint32(buf[16:], 10)
+
+	dataOff := uint32(headerSize + scsiMaxSenseLen)
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
+		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
+	} else {
+		binary.LittleEndian.PutUint32(buf[20:], dataOff)
+		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
+	}
+
+	cdbOff := headerSize - 16
+	buf[cdbOff+0] = 0x85
+	buf[cdbOff+1] = 0x08
+	buf[cdbOff+2] = 0x0e
+	buf[cdbOff+4] = feature
+	buf[cdbOff+6] = sectorCount
+	buf[cdbOff+8] = sectorNumber
+	buf[cdbOff+10] = cylinderLo
+	buf[cdbOff+12] = cylinderHi
+	buf[cdbOff+13] = ataDriveHead
+	buf[cdbOff+14] = command
+
+	if err := deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf); err != nil {
+		return nil, err
+	}
+	out := make([]byte, dataSize)
+	copy(out, buf[dataOff:])
+	return out, nil
+}
+
+func ataCommand(h syscall.Handle, isUSB bool, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi byte) ([]byte, error) {
+	data, err := ataPassThrough(h, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi)
+	if err != nil && isUSB {
+		data, err = scsiAtaPassThrough16(h, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi)
+	}
+	return data, err
 }
 
 func deviceIoControl(h syscall.Handle, code uint32, in, out []byte) error {

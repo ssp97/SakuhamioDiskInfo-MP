@@ -121,6 +121,7 @@ button:disabled { cursor: default; opacity: 0.45; }
 .disk-button.disk-bad .disk-status-dot { background: var(--danger); }
 .disk-button.disk-unknown .disk-status-dot { background: var(--text-faint); }
 .disk-button b, .disk-button span { min-width: 0; overflow: hidden; line-height: 1; white-space: nowrap; text-overflow: ellipsis; }
+.usb-badge { display: inline-block; padding: 0 4px; margin-right: 4px; border-radius: 3px; background: var(--primary-soft); color: var(--primary); font-size: 9px; font-weight: 700; line-height: 1.5; font-style: normal; vertical-align: middle; }
 .disk-button b { font-size: 13px; font-weight: 700; }
 .disk-button span { color: var(--text-muted); font-size: 11px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 12px; }

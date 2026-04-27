@@ -210,6 +210,8 @@ function baseDisk(rawDisk) {
   if (support.trim) features.push("TRIM");
   if (support.ncq) features.push("NCQ");
   if (support.volatileWriteCache) features.push("VolatileWriteCache");
+  if (rawDisk.isUsb) features.push("USB");
+  if (rawDisk.isRemovable) features.push("Removable");
   return {
     raw: rawDisk,
     id: rawDisk.id,
@@ -226,6 +228,8 @@ function baseDisk(rawDisk) {
     capacityBytes: rawDisk.capacityBytes,
     driveLetters: rawDisk.driveLetters || [],
     features,
+    isUsb: rawDisk.isUsb || false,
+    isRemovable: rawDisk.isRemovable || false,
     powerOnHours: -1,
     powerOnCount: 0,
     hostReadsGB: 0,

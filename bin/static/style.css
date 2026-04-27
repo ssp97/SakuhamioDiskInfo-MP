@@ -368,6 +368,19 @@ button:disabled { cursor: default; opacity: 0.45; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.usb-badge {
+  display: inline-block;
+  padding: 0 4px;
+  margin-right: 4px;
+  border-radius: 3px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.5;
+  font-style: normal;
+  vertical-align: middle;
+}
 .disk-button b {
   font-size: 13px;
   font-weight: 700;

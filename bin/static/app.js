@@ -178,7 +178,7 @@ function fillFields(disk) {
   const empty = "----";
   $("firmware").textContent = disk?.firmware || empty;
   $("serial").textContent = maskSerial(disk?.serial);
-  $("protocol").textContent = disk?.protocol || empty;
+  $("protocol").textContent = disk?.isUsb ? "USB (" + (disk?.protocol || "SATA") + ")" : (disk?.protocol || empty);
   $("transfer").textContent = disk?.transferMode || empty;
   $("letters").textContent = disk ? driveLetters(disk) : empty;
   $("standard").textContent = disk?.standard || empty;
@@ -236,10 +236,11 @@ function renderDiskButtons() {
     const health = asleep && !asleepCached ? "unknown" : disk.health;
     const temp = (asleep && !asleepCached) || disk.temperatureC <= 0 ? "-- °C" : `${disk.temperatureC} °C`;
     const title = asleep ? ` title="${asleepCached ? "设备已休眠，显示缓存的 SMART 信息" : "设备已休眠"}"` : "";
+    const usbTag = disk.isUsb ? `<i class="usb-badge">USB</i>` : "";
     return `<button class="disk-button disk-${healthClass(health)} ${index === current ? "active" : ""}" data-index="${index}"${title} type="button">
       <i class="disk-status-dot" aria-hidden="true"></i>
       <b>${escapeHTML(driveLetters(disk))}</b>
-      <span>${escapeHTML(healthText(health))} · ${escapeHTML(temp)}</span>
+      <span>${usbTag}${escapeHTML(healthText(health))} · ${escapeHTML(temp)}</span>
     </button>`;
   }).join("");
   $("diskButtons").querySelectorAll("button").forEach((button) => {
@@ -562,7 +563,9 @@ function numberWithCommas(value) {
 }
 
 function driveLetters(disk) {
-  return disk.driveLetters?.length ? disk.driveLetters.join(" ") : "----";
+  let text = disk.driveLetters?.length ? disk.driveLetters.join(" ") : "----";
+  if (disk.isRemovable) text += " (可移除)";
+  return text;
 }
 
 function maskSerial(serial) {
