@@ -27,8 +27,9 @@ type RawDisk struct {
 	SmartMessage    string     `json:"smartMessage,omitempty"`
 	LastSmartAt     string     `json:"lastSmartAt,omitempty"`
 	LastUpdateError string     `json:"lastUpdateError,omitempty"`
-	IsUSB           bool       `json:"isUsb"`
-	IsRemovable     bool       `json:"isRemovable"`
+	CurrentTemp     *float64   `json:"currentTemp,omitempty"`
+	IsUSB           bool       `json:"-"`
+	IsRemovable     bool       `json:"-"`
 }
 
 type BasicInfo struct {

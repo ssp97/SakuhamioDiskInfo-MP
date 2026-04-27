@@ -8,24 +8,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
+	"crystal-disk-info-mp/internal/db"
 	"crystal-disk-info-mp/internal/smart"
 )
 
 type Server struct {
-	collector smart.Collector
-	mu        sync.Mutex
-	disks     []smart.RawDisk
-	lastErr   string
-	loading   bool
+	monitor  *Monitor
+	database *db.DB
 }
 
 type response struct {
-	Disks   []smart.RawDisk `json:"disks,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Loading bool            `json:"loading,omitempty"`
-	Themes  []string        `json:"themes,omitempty"`
+	Disks       []smart.RawDisk `json:"disks,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	Loading     bool            `json:"loading,omitempty"`
+	LastUpdated string          `json:"lastUpdated,omitempty"`
+	Themes      []string        `json:"themes,omitempty"`
 }
 
 type refreshRequest struct {
@@ -34,8 +32,8 @@ type refreshRequest struct {
 	Index *int   `json:"index"`
 }
 
-func NewServer(collector smart.Collector) *Server {
-	return &Server{collector: collector}
+func NewServer(monitor *Monitor, database *db.DB) *Server {
+	return &Server{monitor: monitor, database: database}
 }
 
 var staticRoot string
@@ -72,6 +70,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/disks", s.apiDisks)
 	mux.HandleFunc("/api/refresh", s.apiRefresh)
 	mux.HandleFunc("/api/themes", s.apiThemes)
+	mux.HandleFunc("/api/temperature/history", s.apiTemperatureHistory)
+	mux.HandleFunc("/api/temperature/current", s.apiTemperatureCurrent)
 	return withCORS(mux)
 }
 
@@ -93,7 +93,13 @@ func (s *Server) apiDisks(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	s.writeState(w, false)
+	disks := s.monitor.GetDisks()
+	lastUpdate := s.monitor.GetLastUpdate()
+	res := response{
+		Disks:       disks,
+		LastUpdated: lastUpdate.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	s.writeJSON(w, res)
 }
 
 func (s *Server) apiRefresh(w http.ResponseWriter, r *http.Request) {
@@ -106,8 +112,80 @@ func (s *Server) apiRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.Refresh(req.Force, req.ID, req.Index)
-	s.writeState(w, false)
+	s.monitor.ForceRefresh(req.Force, req.ID, req.Index)
+	disks := s.monitor.GetDisks()
+	res := response{
+		Disks:       disks,
+		LastUpdated: s.monitor.GetLastUpdate().Format("2006-01-02T15:04:05Z07:00"),
+	}
+	s.writeJSON(w, res)
+}
+
+func (s *Server) apiTemperatureHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	diskID := strings.TrimSpace(q.Get("disk"))
+	if diskID == "" {
+		http.Error(w, "missing disk parameter", http.StatusBadRequest)
+		return
+	}
+	rangeParam := q.Get("range")
+	if rangeParam == "" {
+		rangeParam = "24h"
+	}
+	limitStr := strings.TrimSpace(q.Get("limit"))
+	limit := 0
+	if limitStr != "" {
+		limit, _ = strconv.Atoi(limitStr)
+	}
+
+	records, err := s.database.QueryTemperatureHistory(db.HistoryQuery{
+		DiskID: diskID,
+		Range:  rangeParam,
+		Limit:  limit,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type recordJSON struct {
+		RecordedAt  string  `json:"recordedAt"`
+		MaxTemp     float64 `json:"maxTemp"`
+		AvgTemp     float64 `json:"avgTemp"`
+		MinTemp     float64 `json:"minTemp"`
+		SampleCount int     `json:"sampleCount"`
+	}
+
+	jsonRecords := make([]recordJSON, 0, len(records))
+	for _, rec := range records {
+		jsonRecords = append(jsonRecords, recordJSON{
+			RecordedAt:  rec.RecordedAt.Format("2006-01-02T15:04:05Z07:00"),
+			MaxTemp:     rec.MaxTemp,
+			AvgTemp:     rec.AvgTemp,
+			MinTemp:     rec.MinTemp,
+			SampleCount: rec.Samples,
+		})
+	}
+
+	s.writeJSON(w, map[string]any{
+		"diskId":  diskID,
+		"records": jsonRecords,
+	})
+}
+
+func (s *Server) apiTemperatureCurrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	temps := s.monitor.CurrentTemps()
+	s.writeJSON(w, map[string]any{
+		"disks": temps,
+	})
 }
 
 func parseRefreshRequest(r *http.Request) (refreshRequest, error) {
@@ -163,105 +241,6 @@ func (s *Server) apiThemes(w http.ResponseWriter, r *http.Request) {
 		"Default": "Plain",
 		"Themes":  map[string]any{},
 	})
-}
-
-func (s *Server) Refresh(force bool, id string, index *int) {
-	s.mu.Lock()
-	s.loading = true
-	s.mu.Unlock()
-
-	if id == "" && index == nil {
-		disks, err := s.collector.Scan(force)
-		s.mu.Lock()
-		s.disks = mergeByID(s.disks, disks)
-		s.lastErr = ""
-		if err != nil {
-			s.lastErr = err.Error()
-		}
-		s.loading = false
-		s.mu.Unlock()
-		return
-	}
-
-	target, previous, ok := s.findTarget(id, index)
-	if !ok {
-		s.mu.Lock()
-		s.lastErr = "disk not found"
-		s.loading = false
-		s.mu.Unlock()
-		return
-	}
-	disk, err := s.collector.Read(target, force, previous)
-	s.mu.Lock()
-	s.lastErr = ""
-	if err != nil {
-		s.lastErr = err.Error()
-	} else {
-		s.replaceDisk(disk)
-	}
-	s.loading = false
-	s.mu.Unlock()
-}
-
-func (s *Server) findTarget(id string, index *int) (int, *smart.RawDisk, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.disks {
-		if (id != "" && s.disks[i].ID == id) || (index != nil && s.disks[i].Index == *index) {
-			prev := s.disks[i]
-			return s.disks[i].Index, &prev, true
-		}
-	}
-	if index != nil {
-		return *index, nil, true
-	}
-	return 0, nil, false
-}
-
-func (s *Server) replaceDisk(disk smart.RawDisk) {
-	for i := range s.disks {
-		if s.disks[i].ID == disk.ID || s.disks[i].Index == disk.Index {
-			s.disks[i] = disk
-			return
-		}
-	}
-	s.disks = append(s.disks, disk)
-}
-
-func mergeByID(old, next []smart.RawDisk) []smart.RawDisk {
-	byID := make(map[string]smart.RawDisk, len(old))
-	for _, disk := range old {
-		byID[disk.ID] = disk
-	}
-	for i := range next {
-		prev, ok := byID[next[i].ID]
-		if ok && next[i].SmartState == smart.SmartStateAsleep {
-			if len(next[i].Raw.SmartReadData) == 0 {
-				next[i].Raw.SmartReadData = prev.Raw.SmartReadData
-			}
-			if len(next[i].Raw.SmartReadThreshold) == 0 {
-				next[i].Raw.SmartReadThreshold = prev.Raw.SmartReadThreshold
-			}
-			if next[i].LastSmartAt == "" {
-				next[i].LastSmartAt = prev.LastSmartAt
-			}
-		}
-	}
-	return next
-}
-
-func (s *Server) writeState(w http.ResponseWriter, includeThemes bool) {
-	s.mu.Lock()
-	res := response{
-		Disks:   append([]smart.RawDisk(nil), s.disks...),
-		Error:   s.lastErr,
-		Loading: s.loading,
-	}
-	s.mu.Unlock()
-	if includeThemes {
-		res.Themes = s.themes()
-	}
-	s.writeJSON(w, res)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, v any) {

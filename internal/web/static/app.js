@@ -1,4 +1,4 @@
-import { getDisks, refreshAll, refreshDisk, setApiBase } from "./api.js";
+import { getDisks, refreshAll, refreshDisk, getTemperatureHistory, setApiBase } from "./api.js";
 import { parseDisks } from "./parsers.js";
 
 let rawDisks = [];
@@ -7,11 +7,11 @@ let themeData = {};
 let current = 0;
 let diskPage = 0;
 let apiBase = "";
+let tempChartRange = "24h";
+let tempChartLoading = false;
 
 const disksPerPage = 12;
 const themeStorageKey = "theme";
-const historyLimit = 48;
-const temperatureHistory = new Map();
 const $ = (id) => document.getElementById(id);
 
 const healthStates = {
@@ -92,24 +92,6 @@ async function showDisk(index, read = true) {
   current = (index + disks.length) % disks.length;
   diskPage = Math.floor(current / disksPerPage);
   renderCurrent();
-
-  if (read && rawDisks[current]?.id) {
-    const id = rawDisks[current].id;
-    try {
-      setBusy(true);
-      const data = await refreshDisk(id, false);
-      applyRawDisks(data.disks || rawDisks);
-      const nextIndex = disks.findIndex((disk) => disk.id === id);
-      current = nextIndex >= 0 ? nextIndex : 0;
-      if (disks.length) renderCurrent();
-      else renderEmptyState();
-    } catch (err) {
-      console.error(err);
-      setHeaderStatus("读取失败");
-    } finally {
-      setBusy(false);
-    }
-  }
 }
 
 function renderEmptyState() {
@@ -129,7 +111,6 @@ function renderEmptyState() {
   $("smartSummary").textContent = "0 项";
   setHealthClass("unknown");
   fillFields(null);
-  renderDiskButtons();
   renderTemperatureChart(null);
 }
 
@@ -147,7 +128,6 @@ function renderCurrent() {
   const healthLabel = healthText(disk.health) + (disk.lifePercent >= 0 ? ` (${disk.lifePercent}%)` : "");
 
   renderDiskButtons();
-  recordTemperature(disk);
   $("model").textContent = `${disk.model || "Unknown Disk"} : ${formatCapacity(disk.capacityBytes)}`;
   $("modelName").textContent = disk.model || "Unknown Disk";
   $("capacity").textContent = formatCapacity(disk.capacityBytes);
@@ -178,7 +158,7 @@ function fillFields(disk) {
   const empty = "----";
   $("firmware").textContent = disk?.firmware || empty;
   $("serial").textContent = maskSerial(disk?.serial);
-  $("protocol").textContent = disk?.isUsb ? "USB (" + (disk?.protocol || "SATA") + ")" : (disk?.protocol || empty);
+  $("protocol").textContent = disk?.protocol || empty;
   $("transfer").textContent = disk?.transferMode || empty;
   $("letters").textContent = disk ? driveLetters(disk) : empty;
   $("standard").textContent = disk?.standard || empty;
@@ -236,11 +216,10 @@ function renderDiskButtons() {
     const health = asleep && !asleepCached ? "unknown" : disk.health;
     const temp = (asleep && !asleepCached) || disk.temperatureC <= 0 ? "-- °C" : `${disk.temperatureC} °C`;
     const title = asleep ? ` title="${asleepCached ? "设备已休眠，显示缓存的 SMART 信息" : "设备已休眠"}"` : "";
-    const usbTag = disk.isUsb ? `<i class="usb-badge">USB</i>` : "";
     return `<button class="disk-button disk-${healthClass(health)} ${index === current ? "active" : ""}" data-index="${index}"${title} type="button">
       <i class="disk-status-dot" aria-hidden="true"></i>
       <b>${escapeHTML(driveLetters(disk))}</b>
-      <span>${usbTag}${escapeHTML(healthText(health))} · ${escapeHTML(temp)}</span>
+      <span>${escapeHTML(healthText(health))} · ${escapeHTML(temp)}</span>
     </button>`;
   }).join("");
   $("diskButtons").querySelectorAll("button").forEach((button) => {
@@ -248,31 +227,11 @@ function renderDiskButtons() {
   });
 }
 
-function recordTemperature(disk) {
-  if (!disk?.id || disk.temperatureC <= 0) return;
-  const now = Date.now();
-  let points = temperatureHistory.get(disk.id);
-  if (!points?.length) {
-    points = Array.from({ length: 24 }, (_, index) => ({
-      time: now - (24 - index) * 150000,
-      value: Math.max(0, disk.temperatureC + Math.round(Math.sin(index / 2) * 2)),
-      synthetic: true,
-    }));
-  }
-  const last = points[points.length - 1];
-  if (!last || now - last.time > 10000 || last.synthetic) {
-    points.push({ time: now, value: disk.temperatureC, synthetic: false });
-  } else {
-    last.value = disk.temperatureC;
-    last.synthetic = false;
-  }
-  temperatureHistory.set(disk.id, points.slice(-historyLimit));
-}
-
-function renderTemperatureChart(disk) {
+async function renderTemperatureChart(disk) {
   const svg = $("temperatureChart");
   const empty = "-- °C";
-  if (!disk?.id || !temperatureHistory.has(disk.id)) {
+
+  if (!disk?.id) {
     svg.innerHTML = `<text class="chart-empty" x="260" y="95" text-anchor="middle">暂无温度数据</text>`;
     $("tempNow").textContent = empty;
     $("tempMin").textContent = empty;
@@ -280,49 +239,77 @@ function renderTemperatureChart(disk) {
     return;
   }
 
-  const points = temperatureHistory.get(disk.id);
-  const values = points.map((point) => point.value).filter((value) => value > 0);
-  if (!values.length) {
-    svg.innerHTML = `<text class="chart-empty" x="260" y="95" text-anchor="middle">暂无温度数据</text>`;
-    return;
+  if (tempChartLoading) return;
+  tempChartLoading = true;
+  svg.innerHTML = `<text class="chart-empty" x="260" y="95" text-anchor="middle">加载温度数据...</text>`;
+
+  try {
+    const data = await getTemperatureHistory(disk.id, tempChartRange);
+    const records = data.records || [];
+
+    if (!records.length) {
+      svg.innerHTML = `<text class="chart-empty" x="260" y="95" text-anchor="middle">暂无温度数据</text>`;
+      $("tempNow").textContent = disk.temperatureC > 0 ? `${disk.temperatureC} °C` : empty;
+      $("tempMin").textContent = empty;
+      $("tempMax").textContent = empty;
+      tempChartLoading = false;
+      return;
+    }
+
+    const values = records.map((r) => r.avgTemp).filter((v) => v > 0);
+    if (!values.length) {
+      svg.innerHTML = `<text class="chart-empty" x="260" y="95" text-anchor="middle">暂无温度数据</text>`;
+      tempChartLoading = false;
+      return;
+    }
+
+    const allMax = Math.max(...records.map((r) => r.maxTemp));
+    const allMin = Math.min(...records.map((r) => r.minTemp));
+    const graphMin = Math.max(0, Math.floor((Math.min(...values) - 8) / 5) * 5);
+    const graphMax = Math.max(graphMin + 20, Math.ceil((Math.max(...values) + 8) / 5) * 5);
+    const left = 42;
+    const right = 502;
+    const topY = 18;
+    const bottomY = 154;
+    const width = right - left;
+    const height = bottomY - topY;
+    const step = records.length > 1 ? width / (records.length - 1) : width;
+    const y = (value) => bottomY - ((value - graphMin) / (graphMax - graphMin)) * height;
+    const x = (index) => left + index * step;
+
+    const polyline = records.map((p, i) => `${x(i).toFixed(1)},${y(p.avgTemp).toFixed(1)}`).join(" ");
+    const area = `${left},${bottomY} ${polyline} ${right},${bottomY}`;
+
+    const gridValues = [graphMax, Math.round((graphMax + graphMin) / 2), graphMin];
+    const grids = gridValues.map((value) => {
+      const gy = y(value).toFixed(1);
+      return `<line class="chart-grid" x1="${left}" x2="${right}" y1="${gy}" y2="${gy}"></line>
+        <text class="chart-axis-label" x="12" y="${Number(gy) + 4}">${value}</text>`;
+    }).join("");
+
+    const firstTime = formatChartTime(new Date(records[0].recordedAt));
+    const midIdx = Math.floor(records.length / 2);
+    const midTime = formatChartTime(new Date(records[midIdx].recordedAt));
+    const lastTime = formatChartTime(new Date(records[records.length - 1].recordedAt));
+
+    svg.innerHTML = `
+      ${grids}
+      <text class="chart-axis-label" x="${left}" y="184" text-anchor="middle">${firstTime}</text>
+      <text class="chart-axis-label" x="272" y="184" text-anchor="middle">${midTime}</text>
+      <text class="chart-axis-label" x="${right}" y="184" text-anchor="middle">${lastTime}</text>
+      <polygon class="chart-area" points="${area}"></polygon>
+      <polyline class="chart-line" points="${polyline}"></polyline>
+    `;
+
+    $("tempNow").textContent = disk.temperatureC > 0 ? `${disk.temperatureC} °C` : empty;
+    $("tempMin").textContent = `${allMin} °C`;
+    $("tempMax").textContent = `${allMax} °C`;
+  } catch (err) {
+    console.error("temperature history error:", err);
+    svg.innerHTML = `<text class="chart-empty" x="260" y="95" text-anchor="middle">温度数据加载失败</text>`;
+  } finally {
+    tempChartLoading = false;
   }
-
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const bottom = Math.max(0, Math.floor((min - 8) / 5) * 5);
-  const top = Math.max(bottom + 20, Math.ceil((max + 8) / 5) * 5);
-  const left = 42;
-  const right = 502;
-  const topY = 18;
-  const bottomY = 154;
-  const width = right - left;
-  const height = bottomY - topY;
-  const step = points.length > 1 ? width / (points.length - 1) : width;
-  const y = (value) => bottomY - ((value - bottom) / (top - bottom)) * height;
-  const x = (index) => left + index * step;
-  const polyline = points.map((point, index) => `${x(index).toFixed(1)},${y(point.value).toFixed(1)}`).join(" ");
-  const area = `${left},${bottomY} ${polyline} ${right},${bottomY}`;
-  const gridValues = [top, Math.round((top + bottom) / 2), bottom];
-  const grids = gridValues.map((value) => {
-    const gy = y(value).toFixed(1);
-    return `<line class="chart-grid" x1="${left}" x2="${right}" y1="${gy}" y2="${gy}"></line>
-      <text class="chart-axis-label" x="12" y="${Number(gy) + 4}">${value}</text>`;
-  }).join("");
-  const firstTime = formatChartTime(points[0]?.time);
-  const midTime = formatChartTime(points[Math.floor(points.length / 2)]?.time);
-  const lastTime = formatChartTime(points[points.length - 1]?.time);
-
-  svg.innerHTML = `
-    ${grids}
-    <text class="chart-axis-label" x="${left}" y="184" text-anchor="middle">${firstTime}</text>
-    <text class="chart-axis-label" x="272" y="184" text-anchor="middle">${midTime}</text>
-    <text class="chart-axis-label" x="${right}" y="184" text-anchor="middle">${lastTime}</text>
-    <polygon class="chart-area" points="${area}"></polygon>
-    <polyline class="chart-line" points="${polyline}"></polyline>
-  `;
-  $("tempNow").textContent = disk.temperatureC > 0 ? `${disk.temperatureC} °C` : empty;
-  $("tempMin").textContent = `${min} °C`;
-  $("tempMax").textContent = `${max} °C`;
 }
 
 async function loadDisks() {
@@ -331,7 +318,7 @@ async function loadDisks() {
     const data = await getDisks();
     applyRawDisks(data.disks || []);
     if (current >= disks.length) current = 0;
-    await showDisk(current, shouldReadCurrentDisk());
+    await showDisk(current, false);
     if (data.error) setHeaderStatus(data.error);
   } catch (err) {
     console.error(err);
@@ -348,7 +335,7 @@ async function refreshAllDisks() {
     const data = await refreshAll(false);
     applyRawDisks(data.disks || []);
     if (current >= disks.length) current = 0;
-    await showDisk(current, shouldReadCurrentDisk());
+    await showDisk(current, false);
     if (data.error) setHeaderStatus(data.error);
   } catch (err) {
     console.error(err);
@@ -563,9 +550,7 @@ function numberWithCommas(value) {
 }
 
 function driveLetters(disk) {
-  let text = disk.driveLetters?.length ? disk.driveLetters.join(" ") : "----";
-  if (disk.isRemovable) text += " (可移除)";
-  return text;
+  return disk.driveLetters?.length ? disk.driveLetters.join(" ") : "----";
 }
 
 function maskSerial(serial) {
@@ -586,9 +571,8 @@ function formatDateTime(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function formatChartTime(time) {
-  if (!time) return "--:--";
-  const date = new Date(time);
+function formatChartTime(date) {
+  if (!date || !(date instanceof Date) || isNaN(date)) return "--:--";
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
@@ -618,6 +602,20 @@ function closeThemePicker() {
   $("themeTrigger").setAttribute("aria-expanded", "false");
 }
 
+function setRangeTab(range) {
+  tempChartRange = range;
+  document.querySelectorAll(".range-tabs button").forEach((btn) => {
+    const isActive = btn.textContent.trim() === rangeLabel(range);
+    btn.classList.toggle("active", isActive);
+  });
+  if (disks[current]) renderTemperatureChart(disks[current]);
+}
+
+function rangeLabel(range) {
+  const map = { "1h": "1小时", "24h": "24小时", "7d": "7天" };
+  return map[range] || "24小时";
+}
+
 if (new URL(location.href).searchParams.get("popup") === "1") {
   document.body.classList.add("popup-mode");
 }
@@ -644,7 +642,9 @@ document.addEventListener("click", (event) => {
 });
 document.querySelectorAll(".range-tabs button").forEach((button) => {
   button.addEventListener("click", () => {
-    document.querySelectorAll(".range-tabs button").forEach((item) => item.classList.toggle("active", item === button));
+    const text = button.textContent.trim();
+    const range = text === "1小时" ? "1h" : text === "7天" ? "7d" : "24h";
+    setRangeTab(range);
   });
 });
 

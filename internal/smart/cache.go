@@ -6,6 +6,20 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+func MergeByID(old, next []RawDisk) []RawDisk {
+	byID := make(map[string]RawDisk, len(old))
+	for _, disk := range old {
+		byID[disk.ID] = disk
+	}
+	for i := range next {
+		prev, ok := byID[next[i].ID]
+		if ok && next[i].SmartState == SmartStateAsleep {
+			mergePreviousSMART(&next[i], &prev)
+		}
+	}
+	return next
+}
+
 func mergePreviousSMART(disk *RawDisk, previous *RawDisk) {
 	if previous == nil {
 		return

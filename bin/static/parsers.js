@@ -2,8 +2,11 @@ import { parseATA } from "./parsers-ata.js";
 import { parseNVMe } from "./parsers-nvme.js";
 
 export function parseDisk(rawDisk) {
-  if (rawDisk.basic?.protocol === "NVMe") return parseNVMe(rawDisk);
-  return parseATA(rawDisk);
+  const disk = rawDisk.basic?.protocol === "NVMe" ? parseNVMe(rawDisk) : parseATA(rawDisk);
+  if (rawDisk.currentTemp != null) {
+    disk.temperatureC = rawDisk.currentTemp;
+  }
+  return disk;
 }
 
 export function parseDisks(rawDisks) {
