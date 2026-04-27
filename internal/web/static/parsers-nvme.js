@@ -79,30 +79,56 @@ export function parseNVMe(rawDisk) {
     [0x1D, u32(log, 228)],
   );
 
-  disk.attributes = values.map(([id, value]) => ({
-    id: id.toString(16).padStart(2, "0").toUpperCase(),
-    name: smartName("SmartNVMe", id),
-    noStats: true,
-    current: 0,
-    worst: 0,
-    threshold: 0,
-    raw: String(value),
-    rawValue: value,
-    status: "good",
-  }));
+  disk.attributes = values.map(([id, value]) => {
+    let current = null, worst = null, threshold = null;
+    if (id === 0x01) {
+      current = critical;
+    } else if (id === 0x02) {
+      current = disk.temperatureC;
+    } else if (id === 0x03) {
+      current = spare;
+      threshold = spareThreshold;
+    } else if (id === 0x04) {
+      current = spareThreshold;
+    } else if (id === 0x05) {
+      current = used;
+    } else if (id === 0x0B) {
+      current = disk.powerOnCount;
+    } else if (id === 0x0C) {
+      current = disk.powerOnHours;
+    }
+    return {
+      id: id.toString(16).padStart(2, "0").toUpperCase(),
+      name: smartName("SmartNVMe", id),
+      current,
+      worst,
+      threshold,
+      raw: String(value),
+      rawValue: value,
+      status: "good",
+    };
+  });
+
+  for (const attr of disk.attributes) {
+    if (attr.threshold > 0 && attr.current > 0 && attr.current < attr.threshold) {
+      attr.status = "bad";
+    }
+  }
 
   if (critical) {
     disk.health = "bad";
     disk.healthReason = "NVMe 严重警告已置位";
     disk.attributes[0].status = "bad";
   } else if (spareThreshold > 0 && spare <= spareThreshold) {
-    disk.health = spare < spareThreshold ? "bad" : "caution";
+    const st = spare < spareThreshold ? "bad" : "caution";
+    if (disk.attributes[2].status !== "bad") disk.attributes[2].status = st;
+    if (disk.attributes[3].status !== "bad") disk.attributes[3].status = st;
+    disk.health = st;
     disk.healthReason = "可用备用空间达到阈值";
-    disk.attributes[2].status = disk.health;
   } else if (disk.lifePercent <= 10) {
+    if (disk.attributes[4].status !== "bad") disk.attributes[4].status = "caution";
     disk.health = "caution";
     disk.healthReason = "剩余寿命较低";
-    disk.attributes[4].status = "caution";
   }
   return disk;
 }
