@@ -33,12 +33,12 @@ const (
 	nvmeDataTypeIdentify                   = 1
 	nvmeDataTypeLogPage                    = 2
 
-	propertyStorageDeviceProperty          = 0
-	busTypeUsb                             = 0x08
+	propertyStorageDeviceProperty = 0
+	busTypeUsb                    = 0x08
 
-	ioctlScsiPassThroughDirect             = 0x0004D014
-	scsiDataIn                             = 1
-	scsiMaxSenseLen                        = 32
+	ioctlScsiPassThroughDirect = 0x0004D014
+	scsiDataIn                 = 1
+	scsiMaxSenseLen            = 32
 
 	ataFlagsDRDYRequired = 0x01
 	ataFlagsDataIn       = 0x02

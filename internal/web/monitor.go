@@ -204,9 +204,9 @@ func (m *Monitor) replaceDiskLocked(disk smart.RawDisk) {
 }
 
 type CurrentTempInfo struct {
-	ID           string  `json:"id"`
-	Model        string  `json:"model"`
-	CurrentTemp  float64 `json:"currentTemp"`
-	HasTemp      bool    `json:"hasTemp"`
-	LastUpdated  string  `json:"lastUpdated,omitempty"`
+	ID          string  `json:"id"`
+	Model       string  `json:"model"`
+	CurrentTemp float64 `json:"currentTemp"`
+	HasTemp     bool    `json:"hasTemp"`
+	LastUpdated string  `json:"lastUpdated,omitempty"`
 }
