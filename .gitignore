@@ -2,3 +2,6 @@
 !/bin/static/themes/themes.json
 !/bin/static/themes/Sakuhamio/
 !/bin/static/themes/Sakuhamio/**
+*.db
+cdi-mp
+cdi-mp.exe
