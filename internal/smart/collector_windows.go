@@ -37,7 +37,9 @@ const (
 	busTypeUsb                    = 0x07
 
 	ioctlScsiPassThroughDirect = 0x0004D014
+	ioctlScsiPassThrough       = 0x0004D004 // buffered version (CDI approach)
 	scsiDataIn                 = 1
+	scsiDataOut                = 2
 	scsiMaxSenseLen            = 32
 
 	ataFlagsDRDYRequired = 0x01
@@ -119,13 +121,14 @@ func openPhysicalDrive(index int) (syscall.Handle, error) {
 	if err != nil {
 		return syscall.InvalidHandle, err
 	}
+	// Use 0 for dwFlagsAndAttributes to match CrystalDiskInfo's CreateFile call
 	return syscall.CreateFile(
 		path,
 		genericRead|genericWrite,
 		fileShareRead|fileShareWrite,
 		nil,
 		openExisting,
-		fileAttributeNorm,
+		0,
 		0,
 	)
 }
@@ -523,186 +526,220 @@ func scsiAtaPassThrough16(h syscall.Handle, command, feature, sectorCount, secto
 	return out, nil
 }
 
-// scsiInquiry sends a SCSI INQUIRY command to identify the device.
-// Returns the standard inquiry data (36 bytes).
-func scsiInquiry(h syscall.Handle) ([]byte, error) {
-	const allocLen = 36
+// scsiPassThroughBuffered sends SCSI command via IOCTL_SCSI_PASS_THROUGH (buffered, 0x4D004).
+// Uses SCSI_PASS_THROUGH_WITH_BUFFERS layout (matching CrystalDiskInfo):
+//
+//	SCSI_PASS_THROUGH (MSVC default alignment, x64 = 52, x86 = 44):
+//	  Length(2) ScsiStatus(1) PathId(1) TargetId(1) Lun(1) CdbLength(1)
+//	  SenseInfoLength(1) DataIn(1) pad(3) DataTransferLength(4) TimeOutValue(4)
+//	  pad(4) DataBufferOffset(8) SenseInfoOffset(4) Cdb[16]   (x64)
+//	  DataBufferOffset(4) SenseInfoOffset(4) Cdb[16]           (x86)
+//	+ ULONG Filler + SenseBuf[32] + DataBuf[N]
+func scsiPassThroughBuffered(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]byte, error) {
+	const senseLen = 32
+
+	// sizeof with MSVC default alignment: 52 x64, 44 x86
+	sptSize := 44
+	cdbOff := 28
+	dataBufOff := 20 // DataBufferOffset field offset in SPT
+	senseOffOff := 24 // SenseInfoOffset field offset in SPT
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		sptSize = 52
+		cdbOff = 36
+		dataBufOff = 24
+		senseOffOff = 32
+	}
+
+	// SCSI_PASS_THROUGH_WITH_BUFFERS = SPT + Filler(4) + SenseBuf(32) + DataBuf(N)
+	senseOff := uint32(sptSize + 4)  // SPT + Filler (ULONG)
+	dataOff := senseOff + senseLen    // SPT + Filler + SenseBuf
+	totalSize := int(dataOff) + dataLen
+	buf := make([]byte, totalSize)
+
+	binary.LittleEndian.PutUint16(buf[0:], uint16(sptSize))
+	buf[4] = 0               // TargetId (UCHAR)
+	buf[5] = 0               // Lun
+	buf[6] = byte(len(cdb))  // CdbLength
+	buf[7] = senseLen        // SenseInfoLength
+	buf[8] = dataIn          // DataIn (1=read, 0=write)
+	binary.LittleEndian.PutUint32(buf[12:], uint32(dataLen))
+	binary.LittleEndian.PutUint32(buf[16:], 2)
+
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		binary.LittleEndian.PutUint64(buf[dataBufOff:], uint64(dataOff))
+	} else {
+		binary.LittleEndian.PutUint32(buf[dataBufOff:], dataOff)
+	}
+	binary.LittleEndian.PutUint32(buf[senseOffOff:], senseOff)
+
+	copy(buf[cdbOff:], cdb)
+
+	if err := deviceIoControl(h, ioctlScsiPassThrough, buf, buf); err != nil {
+		return nil, err
+	}
+	result := make([]byte, dataLen)
+	copy(result, buf[dataOff:])
+	return result, nil
+}
+
+// scsiPassThroughDirect48 sends SCSI command via IOCTL_SCSI_PASS_THROUGH_DIRECT (0x4D014).
+// Uses SCSI_PASS_THROUGH_DIRECT layout (METHOD_BUFFERED, USHORT TargetId):
+//
+//	Length(2) ScsiStatus(1) PathId(1) TargetId(2) Lun(1) CdbLength(1)
+//	SenseInfoLength(1) DataIn(1) pad(2) DataTransferLength(4) TimeOutValue(4)
+//	DataBuffer(8/4) SenseInfoOffset(4) Cdb[16]
+//	Total: 48 x64 / 44 x86 (with pack(4) alignment)
+//
+// DataBuffer is a USER-MODE POINTER to the data area within buf.
+func scsiPassThroughDirect48(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]byte, error) {
+	const senseLen = 32
+
 	headerSize := 48
 	if unsafe.Sizeof(uintptr(0)) == 4 {
 		headerSize = 44
 	}
+	totalSize := headerSize + senseLen + dataLen
+	buf := make([]byte, totalSize)
 
-	buf := make([]byte, headerSize+scsiMaxSenseLen+allocLen)
+	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize)) // Length
+	// buf[4-5] TargetId (USHORT) = 0
+	buf[6] = 0                // Lun
+	buf[7] = byte(len(cdb))   // CdbLength
+	buf[8] = senseLen         // SenseInfoLength
+	buf[9] = dataIn           // DataIn
+	binary.LittleEndian.PutUint32(buf[12:], uint32(dataLen))
+	binary.LittleEndian.PutUint32(buf[16:], 2)
 
-	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
-	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
-	buf[8] = scsiDataIn
-	binary.LittleEndian.PutUint32(buf[12:], allocLen)
-	binary.LittleEndian.PutUint32(buf[16:], 10)
-
-	dataOff := uint32(headerSize + scsiMaxSenseLen)
+	// DataBuffer = absolute pointer to data area within buf
+	dataOff := uint32(headerSize + senseLen)
+	dataPtr := uintptr(unsafe.Pointer(&buf[headerSize])) + uintptr(int(dataOff)-headerSize)
 	if unsafe.Sizeof(uintptr(0)) == 8 {
-		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
-		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
+		binary.LittleEndian.PutUint64(buf[20:], uint64(dataPtr))
 	} else {
-		binary.LittleEndian.PutUint32(buf[20:], dataOff)
-		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
+		binary.LittleEndian.PutUint32(buf[20:], uint32(dataPtr))
 	}
-
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize)) // SenseInfoOffset
+	} else {
+		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize)) // SenseInfoOffset
+	}
 	cdbOff := headerSize - 16
-	buf[cdbOff+0] = 0x12 // INQUIRY
-	buf[cdbOff+1] = 0    // EVPD = 0 (standard inquiry)
-	buf[cdbOff+2] = 0    // Page Code
-	buf[cdbOff+3] = 0
-	buf[cdbOff+4] = allocLen
-	buf[cdbOff+5] = 0
+	copy(buf[cdbOff:], cdb)
 
 	if err := deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf); err != nil {
 		return nil, err
 	}
-	out := make([]byte, allocLen)
-	copy(out, buf[dataOff:])
-	return out, nil
+	result := make([]byte, dataLen)
+	copy(result, buf[dataOff:])
+	return result, nil
 }
 
-// scsiWriteBuffer sends SCSI WRITE BUFFER (0x3B) with vendor-specific mode (0x0F).
-// Used by USB NVMe bridges (ASMedia, Realtek) to send NVMe Admin commands.
-func scsiWriteBuffer(h syscall.Handle, bufferID byte, data []byte) error {
-	const mode = 0x0F
-	headerSize := 48
-	if unsafe.Sizeof(uintptr(0)) == 4 {
-		headerSize = 44
-	}
+type scsiPassFn func(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]byte, error)
 
-	totalSize := headerSize + scsiMaxSenseLen + len(data)
-	buf := make([]byte, totalSize)
-
-	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
-	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
-	buf[8] = 2 // DataOut (host → device)
-	binary.LittleEndian.PutUint32(buf[12:], uint32(len(data)))
-	binary.LittleEndian.PutUint32(buf[16:], 10)
-
-	dataOff := uint32(headerSize + scsiMaxSenseLen)
-	if unsafe.Sizeof(uintptr(0)) == 8 {
-		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
-		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
-	} else {
-		binary.LittleEndian.PutUint32(buf[20:], dataOff)
-		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
-	}
-
-	cdbOff := headerSize - 16
-	buf[cdbOff+0] = 0x3B // WRITE BUFFER
-	buf[cdbOff+1] = mode
-	buf[cdbOff+2] = bufferID
-	buf[cdbOff+3] = 0 // Buffer Offset (3 bytes, big endian)
-	buf[cdbOff+4] = 0
-	buf[cdbOff+5] = 0
-	tl := uint32(len(data))
-	buf[cdbOff+6] = byte(tl >> 16) // Transfer Length (3 bytes, big endian)
-	buf[cdbOff+7] = byte(tl >> 8)
-	buf[cdbOff+8] = byte(tl)
-	buf[cdbOff+9] = 0 // Control
-
-	copy(buf[dataOff:], data)
-
-	return deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf)
-}
-
-// scsiReadBuffer sends SCSI READ BUFFER (0x3C) with vendor-specific mode (0x0F).
-// Used by USB NVMe bridges to read NVMe Admin command results.
-func scsiReadBuffer(h syscall.Handle, bufferID byte, allocLength int) ([]byte, error) {
-	const mode = 0x0F
-	headerSize := 48
-	if unsafe.Sizeof(uintptr(0)) == 4 {
-		headerSize = 44
-	}
-
-	totalSize := headerSize + scsiMaxSenseLen + allocLength
-	buf := make([]byte, totalSize)
-
-	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
-	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
-	buf[8] = scsiDataIn
-	binary.LittleEndian.PutUint32(buf[12:], uint32(allocLength))
-	binary.LittleEndian.PutUint32(buf[16:], 10)
-
-	dataOff := uint32(headerSize + scsiMaxSenseLen)
-	if unsafe.Sizeof(uintptr(0)) == 8 {
-		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
-		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
-	} else {
-		binary.LittleEndian.PutUint32(buf[20:], dataOff)
-		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
-	}
-
-	cdbOff := headerSize - 16
-	buf[cdbOff+0] = 0x3C // READ BUFFER
-	buf[cdbOff+1] = mode
-	buf[cdbOff+2] = bufferID
-	buf[cdbOff+3] = 0 // Buffer Offset (3 bytes, big endian)
-	buf[cdbOff+4] = 0
-	buf[cdbOff+5] = 0
-	buf[cdbOff+6] = byte(allocLength >> 16) // Allocation Length (3 bytes, big endian)
-	buf[cdbOff+7] = byte(allocLength >> 8)
-	buf[cdbOff+8] = byte(allocLength)
-	buf[cdbOff+9] = 0 // Control
-
-	if err := deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf); err != nil {
-		return nil, err
-	}
-	out := make([]byte, allocLength)
-	copy(out, buf[dataOff:])
-	return out, nil
-}
-
-// buildNVMeAdminCmd builds a 64-byte NVMe Admin Command (Submission Queue Entry).
-func buildNVMeAdminCmd(opcode byte, nsid uint32, cdw10, cdw11, cdw12, cdw13, cdw14, cdw15 uint32) []byte {
-	cmd := make([]byte, 64)
-	cmd[0] = opcode
-	binary.LittleEndian.PutUint32(cmd[4:], nsid)
-	binary.LittleEndian.PutUint32(cmd[32:], cdw10)
-	binary.LittleEndian.PutUint32(cmd[36:], cdw11)
-	binary.LittleEndian.PutUint32(cmd[40:], cdw12)
-	binary.LittleEndian.PutUint32(cmd[44:], cdw13)
-	binary.LittleEndian.PutUint32(cmd[48:], cdw14)
-	binary.LittleEndian.PutUint32(cmd[52:], cdw15)
-	return cmd
-}
-
-// scsiNVMeAdminCmd sends an NVMe Admin command via SCSI WRITE BUFFER / READ BUFFER
-// passthrough (used by ASMedia/Realtek USB NVMe bridges).
-func scsiNVMeAdminCmd(h syscall.Handle, bufferID byte, cmd []byte, respLen int) ([]byte, error) {
-	if err := scsiWriteBuffer(h, bufferID, cmd); err != nil {
-		return nil, err
-	}
-	resp, err := scsiReadBuffer(h, bufferID, respLen)
-	if err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-// readUSBDriveNVMe attempts to read NVMe Identify/SMART data from a USB-attached
-// NVMe drive via SCSI WRITE BUFFER/READ BUFFER passthrough. This works with common
-// USB NVMe bridge chips (ASMedia ASM2362/2364, Realtek RTL9210, etc.).
+// readUSBDriveNVMe attempts to read NVMe Identify + SMART data from a USB-attached
+// NVMe drive using vendor-specific CDBs (matching CrystalDiskInfo approach):
+//
+//	Realtek RTL9210:  CDB 0xE4 (16-byte), single-step
+//	ASMedia ASM2362:  CDB 0xE6 (16-byte), single-step
+//	JMicron JMS583:   CDB 0xA1 (12-byte), two-step (OUT then DMA-IN)
+//
+// Tries IOCTL_SCSI_PASS_THROUGH (buffered) first, then IOCTL_SCSI_PASS_THROUGH_DIRECT.
+// NOTE: On some Windows systems, USB storage class drivers (usbstor.sys) may
+// return ERROR_REVISION_MISMATCH for SCSI pass-through IOCTLs, causing this
+// function to silently fall back to the "USB unsupported" path.
 func readUSBDriveNVMe(h syscall.Handle) (ctrl, ns, log []byte, err error) {
-	for _, bufID := range []byte{0x01, 0x00} {
-		ctrl, err = scsiNVMeAdminCmd(h, bufID, buildNVMeAdminCmd(0x06, 0, 0x01, 0, 0, 0, 0, 0), 4096)
-		if err != nil {
-			continue
+	fns := []scsiPassFn{scsiPassThroughBuffered, scsiPassThroughDirect48}
+
+	// Try both IOCTL types and both bridge protocols
+	for _, send := range fns {
+		// Realtek RTL9210: CDB 0xE4
+		if ctrl, ns, log, err = tryRealtekNVMe(h, send); err == nil {
+			return
 		}
-		ns, err = scsiNVMeAdminCmd(h, bufID, buildNVMeAdminCmd(0x06, 1, 0x00, 0, 0, 0, 0, 0), 4096)
-		if err != nil {
-			continue
-		}
-		log, err = scsiNVMeAdminCmd(h, bufID, buildNVMeAdminCmd(0x02, 0, 0x007F, 0x0002, 0, 0, 0, 0), 512)
-		if err == nil {
-			return ctrl, ns, log, nil
+		// ASMedia ASM2362/2364: CDB 0xE6
+		if ctrl, ns, log, err = tryASMediaNVMe(h, send); err == nil {
+			return
 		}
 	}
-	return nil, nil, nil, errors.New("USB NVMe SCSI passthrough failed")
+	return nil, nil, nil, errors.New("USB NVMe passthrough failed")
+}
+
+// tryRealtekNVMe tries Realtek RTL9210 protocol (CDB 0xE4)
+func tryRealtekNVMe(h syscall.Handle, send scsiPassFn) (ctrl, ns, log []byte, err error) {
+	// Identify Controller: CDB 0xE4, cmd=0x06, CNS=1
+	cdb := make([]byte, 16)
+	tlen := uint16(4096)
+	cdb[0] = 0xE4
+	cdb[1] = byte(tlen)
+	cdb[2] = byte(tlen >> 8)
+	cdb[3] = 0x06
+	cdb[4] = 0x01
+
+	ctrl, err = send(h, cdb, scsiDataIn, 4096)
+	if err != nil || len(ctrl) < 512 || cleanASCII(ctrl[24:64]) == "" {
+		return nil, nil, nil, errors.New("Realtek Identify failed")
+	}
+
+	// Identify Namespace: CNS=0, NSID=1
+	cdb[4] = 0x00
+	cdb[7] = 0x01
+	ns, err = send(h, cdb, scsiDataIn, 4096)
+	if err != nil {
+		ns = nil // non-fatal
+	}
+
+	// Get Log Page (SMART): cmd=0x02, LID=2
+	tlen = uint16(512)
+	cdb[1] = byte(tlen)
+	cdb[2] = byte(tlen >> 8)
+	cdb[3] = 0x02
+	cdb[4] = 0x02
+	cdb[7] = 0
+
+	log, err = send(h, cdb, scsiDataIn, 512)
+	if err != nil || log == nil || len(log) < 512 {
+		return nil, nil, nil, errors.New("Realtek SMART failed")
+	}
+	// Validate: checksum should be non-zero
+	sum := 0
+	for _, b := range log {
+		sum += int(b)
+	}
+	if sum == 0 {
+		return nil, nil, nil, errors.New("Realtek SMART zero data")
+	}
+	return
+}
+
+// tryASMediaNVMe tries ASMedia ASM2362/2364 protocol (CDB 0xE6)
+func tryASMediaNVMe(h syscall.Handle, send scsiPassFn) (ctrl, ns, log []byte, err error) {
+	cdb := make([]byte, 16)
+	cdb[0] = 0xE6
+	cdb[1] = 0x06 // Identify
+	cdb[3] = 0x01 // CNS=1
+
+	ctrl, err = send(h, cdb, scsiDataIn, 4096)
+	if err != nil || len(ctrl) < 512 || cleanASCII(ctrl[24:64]) == "" {
+		return nil, nil, nil, errors.New("ASMedia Identify failed")
+	}
+
+	// Get Log Page (SMART): cmd=0x02, LID=2, NUMD=0x7F
+	cdb[1] = 0x02
+	cdb[3] = 0x02
+	cdb[7] = 0x7F
+
+	log, err = send(h, cdb, scsiDataIn, 512)
+	if err != nil || log == nil || len(log) < 512 {
+		return nil, nil, nil, errors.New("ASMedia SMART failed")
+	}
+	sum := 0
+	for _, b := range log {
+		sum += int(b)
+	}
+	if sum == 0 {
+		return nil, nil, nil, errors.New("ASMedia SMART zero data")
+	}
+	return
 }
 
 func ataCommand(h syscall.Handle, isUSB bool, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi byte) ([]byte, error) {
