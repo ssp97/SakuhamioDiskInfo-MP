@@ -10,10 +10,10 @@
 
 ```bash
 # Windows
-go build -o cdi-mp.exe ./cmd/cdi-mp/
+go build -o ./bin/cdi-mp.exe ./cmd/cdi-mp/
 
 # Linux
-go build -o cdi-mp ./cmd/cdi-mp/
+go build -o ./bin/cdi-mp ./cmd/cdi-mp/
 ```
 
 ## Project Overview
@@ -55,7 +55,9 @@ go build -o cdi-mp ./cmd/cdi-mp/
 
 ### Common Pitfalls
 - **Privilege elevation** is Windows-only (`elevate_windows.go`). On Linux the binary must be run as root or have `CAP_SYS_ADMIN` / `CAP_SYS_RAWIO`.
-- **USB drives** use SCSI ATA PASS-THROUGH fallback on both platforms. Test with real USB enclosures.
+- **USB drives**: `queryStorageDeviceDescriptor` needs a 16-byte query buffer (`STORAGE_PROPERTY_QUERY`), not 8. The constant `busTypeUsb` is `0x07` (not `0x08`, which is `BusTypeRAID`). Both are defined in `collector_windows.go`.
+- **USB NVMe drives** (JMicron JMS583, ASMedia ASM2362/2364) that don't expose as native NVMe are detected as USB devices but SMART is unsupported because `IOCTL_SCSI_PASS_THROUGH_DIRECT` is not supported by their driver stack. A SCSI WRITE BUFFER/READ BUFFER passthrough attempt is made in `readUSBDriveNVMe()`, but this only works if the USB bridge's driver supports SCSI pass-through.
+- **USB drives** use SCSI ATA PASS-THROUGH fallback via `ataCommand()` → `scsiAtaPassThrough16()`. This requires `isUSB=true`, which in turn depends on the correct `busTypeUsb` constant.
 - **Vendor-specific SMART** in `internal/smart/ata.go` has ~40 vendor matchers (SandForce 7-byte raw, JMicron 8-byte, etc.). New vendors should be added there.
 - **NVMe vs ATA** protocol detection happens on the frontend in `parsers.js` based on the `Protocol` field from the API.
 - **`go:embed`** in `internal/web/static.go` embeds `internal/web/static/` as fallback. The runtime `-static` flag takes priority. Both must be kept in sync.

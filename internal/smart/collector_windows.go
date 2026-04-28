@@ -34,7 +34,7 @@ const (
 	nvmeDataTypeLogPage                    = 2
 
 	propertyStorageDeviceProperty = 0
-	busTypeUsb                    = 0x08
+	busTypeUsb                    = 0x07
 
 	ioctlScsiPassThroughDirect = 0x0004D014
 	scsiDataIn                 = 1
@@ -168,6 +168,27 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 		}
 		if disk.Basic.Model != "" {
 			return disk, nil
+		}
+	}
+
+	if disk.IsUSB {
+		if ctrl, ns, log, err := readUSBDriveNVMe(h); err == nil {
+			size := disk.CapacityBytes
+			parseNVMeIdentify(ctrl, ns, &disk)
+			if size > 0 {
+				disk.CapacityBytes = size
+			}
+			if len(log) > 0 {
+				disk.Raw.SmartHealthLog = cloneBytes(log)
+				disk.SmartState = SmartStateOK
+				disk.LastSmartAt = nowUTC()
+			} else {
+				disk.SmartState = SmartStateError
+				disk.SmartMessage = "NVMe SMART 读取失败"
+			}
+			if disk.Basic.Model != "" {
+				return disk, nil
+			}
 		}
 	}
 
@@ -428,7 +449,7 @@ func ataCheckPowerModeWindows(h syscall.Handle) (bool, error) {
 }
 
 func queryStorageDeviceDescriptor(h syscall.Handle) (busType uint32, removable bool, vendor, product, revision, serial string, err error) {
-	queryBuf := make([]byte, 8)
+	queryBuf := make([]byte, 16)
 	binary.LittleEndian.PutUint32(queryBuf[0:], propertyStandardQuery)
 	binary.LittleEndian.PutUint32(queryBuf[4:], propertyStorageDeviceProperty)
 
@@ -500,6 +521,188 @@ func scsiAtaPassThrough16(h syscall.Handle, command, feature, sectorCount, secto
 	out := make([]byte, dataSize)
 	copy(out, buf[dataOff:])
 	return out, nil
+}
+
+// scsiInquiry sends a SCSI INQUIRY command to identify the device.
+// Returns the standard inquiry data (36 bytes).
+func scsiInquiry(h syscall.Handle) ([]byte, error) {
+	const allocLen = 36
+	headerSize := 48
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		headerSize = 44
+	}
+
+	buf := make([]byte, headerSize+scsiMaxSenseLen+allocLen)
+
+	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
+	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
+	buf[8] = scsiDataIn
+	binary.LittleEndian.PutUint32(buf[12:], allocLen)
+	binary.LittleEndian.PutUint32(buf[16:], 10)
+
+	dataOff := uint32(headerSize + scsiMaxSenseLen)
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
+		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
+	} else {
+		binary.LittleEndian.PutUint32(buf[20:], dataOff)
+		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
+	}
+
+	cdbOff := headerSize - 16
+	buf[cdbOff+0] = 0x12 // INQUIRY
+	buf[cdbOff+1] = 0    // EVPD = 0 (standard inquiry)
+	buf[cdbOff+2] = 0    // Page Code
+	buf[cdbOff+3] = 0
+	buf[cdbOff+4] = allocLen
+	buf[cdbOff+5] = 0
+
+	if err := deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf); err != nil {
+		return nil, err
+	}
+	out := make([]byte, allocLen)
+	copy(out, buf[dataOff:])
+	return out, nil
+}
+
+// scsiWriteBuffer sends SCSI WRITE BUFFER (0x3B) with vendor-specific mode (0x0F).
+// Used by USB NVMe bridges (ASMedia, Realtek) to send NVMe Admin commands.
+func scsiWriteBuffer(h syscall.Handle, bufferID byte, data []byte) error {
+	const mode = 0x0F
+	headerSize := 48
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		headerSize = 44
+	}
+
+	totalSize := headerSize + scsiMaxSenseLen + len(data)
+	buf := make([]byte, totalSize)
+
+	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
+	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
+	buf[8] = 2 // DataOut (host → device)
+	binary.LittleEndian.PutUint32(buf[12:], uint32(len(data)))
+	binary.LittleEndian.PutUint32(buf[16:], 10)
+
+	dataOff := uint32(headerSize + scsiMaxSenseLen)
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
+		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
+	} else {
+		binary.LittleEndian.PutUint32(buf[20:], dataOff)
+		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
+	}
+
+	cdbOff := headerSize - 16
+	buf[cdbOff+0] = 0x3B // WRITE BUFFER
+	buf[cdbOff+1] = mode
+	buf[cdbOff+2] = bufferID
+	buf[cdbOff+3] = 0 // Buffer Offset (3 bytes, big endian)
+	buf[cdbOff+4] = 0
+	buf[cdbOff+5] = 0
+	tl := uint32(len(data))
+	buf[cdbOff+6] = byte(tl >> 16) // Transfer Length (3 bytes, big endian)
+	buf[cdbOff+7] = byte(tl >> 8)
+	buf[cdbOff+8] = byte(tl)
+	buf[cdbOff+9] = 0 // Control
+
+	copy(buf[dataOff:], data)
+
+	return deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf)
+}
+
+// scsiReadBuffer sends SCSI READ BUFFER (0x3C) with vendor-specific mode (0x0F).
+// Used by USB NVMe bridges to read NVMe Admin command results.
+func scsiReadBuffer(h syscall.Handle, bufferID byte, allocLength int) ([]byte, error) {
+	const mode = 0x0F
+	headerSize := 48
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		headerSize = 44
+	}
+
+	totalSize := headerSize + scsiMaxSenseLen + allocLength
+	buf := make([]byte, totalSize)
+
+	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize))
+	binary.LittleEndian.PutUint16(buf[6:], uint16(16)|(uint16(scsiMaxSenseLen)<<8))
+	buf[8] = scsiDataIn
+	binary.LittleEndian.PutUint32(buf[12:], uint32(allocLength))
+	binary.LittleEndian.PutUint32(buf[16:], 10)
+
+	dataOff := uint32(headerSize + scsiMaxSenseLen)
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		binary.LittleEndian.PutUint64(buf[20:], uint64(dataOff))
+		binary.LittleEndian.PutUint32(buf[28:], uint32(headerSize))
+	} else {
+		binary.LittleEndian.PutUint32(buf[20:], dataOff)
+		binary.LittleEndian.PutUint32(buf[24:], uint32(headerSize))
+	}
+
+	cdbOff := headerSize - 16
+	buf[cdbOff+0] = 0x3C // READ BUFFER
+	buf[cdbOff+1] = mode
+	buf[cdbOff+2] = bufferID
+	buf[cdbOff+3] = 0 // Buffer Offset (3 bytes, big endian)
+	buf[cdbOff+4] = 0
+	buf[cdbOff+5] = 0
+	buf[cdbOff+6] = byte(allocLength >> 16) // Allocation Length (3 bytes, big endian)
+	buf[cdbOff+7] = byte(allocLength >> 8)
+	buf[cdbOff+8] = byte(allocLength)
+	buf[cdbOff+9] = 0 // Control
+
+	if err := deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf); err != nil {
+		return nil, err
+	}
+	out := make([]byte, allocLength)
+	copy(out, buf[dataOff:])
+	return out, nil
+}
+
+// buildNVMeAdminCmd builds a 64-byte NVMe Admin Command (Submission Queue Entry).
+func buildNVMeAdminCmd(opcode byte, nsid uint32, cdw10, cdw11, cdw12, cdw13, cdw14, cdw15 uint32) []byte {
+	cmd := make([]byte, 64)
+	cmd[0] = opcode
+	binary.LittleEndian.PutUint32(cmd[4:], nsid)
+	binary.LittleEndian.PutUint32(cmd[32:], cdw10)
+	binary.LittleEndian.PutUint32(cmd[36:], cdw11)
+	binary.LittleEndian.PutUint32(cmd[40:], cdw12)
+	binary.LittleEndian.PutUint32(cmd[44:], cdw13)
+	binary.LittleEndian.PutUint32(cmd[48:], cdw14)
+	binary.LittleEndian.PutUint32(cmd[52:], cdw15)
+	return cmd
+}
+
+// scsiNVMeAdminCmd sends an NVMe Admin command via SCSI WRITE BUFFER / READ BUFFER
+// passthrough (used by ASMedia/Realtek USB NVMe bridges).
+func scsiNVMeAdminCmd(h syscall.Handle, bufferID byte, cmd []byte, respLen int) ([]byte, error) {
+	if err := scsiWriteBuffer(h, bufferID, cmd); err != nil {
+		return nil, err
+	}
+	resp, err := scsiReadBuffer(h, bufferID, respLen)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// readUSBDriveNVMe attempts to read NVMe Identify/SMART data from a USB-attached
+// NVMe drive via SCSI WRITE BUFFER/READ BUFFER passthrough. This works with common
+// USB NVMe bridge chips (ASMedia ASM2362/2364, Realtek RTL9210, etc.).
+func readUSBDriveNVMe(h syscall.Handle) (ctrl, ns, log []byte, err error) {
+	for _, bufID := range []byte{0x01, 0x00} {
+		ctrl, err = scsiNVMeAdminCmd(h, bufID, buildNVMeAdminCmd(0x06, 0, 0x01, 0, 0, 0, 0, 0), 4096)
+		if err != nil {
+			continue
+		}
+		ns, err = scsiNVMeAdminCmd(h, bufID, buildNVMeAdminCmd(0x06, 1, 0x00, 0, 0, 0, 0, 0), 4096)
+		if err != nil {
+			continue
+		}
+		log, err = scsiNVMeAdminCmd(h, bufID, buildNVMeAdminCmd(0x02, 0, 0x007F, 0x0002, 0, 0, 0, 0), 512)
+		if err == nil {
+			return ctrl, ns, log, nil
+		}
+	}
+	return nil, nil, nil, errors.New("USB NVMe SCSI passthrough failed")
 }
 
 func ataCommand(h syscall.Handle, isUSB bool, command, feature, sectorCount, sectorNumber, cylinderLo, cylinderHi byte) ([]byte, error) {
