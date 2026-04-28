@@ -1,0 +1,14 @@
+services:
+  cdi-mp:
+    build: .
+    container_name: cdi-mp
+    ports:
+      - "8080:8080"
+    volumes:
+      - cdi-data:/data
+      - /dev:/dev:ro
+    privileged: true
+    restart: unless-stopped
+
+volumes:
+  cdi-data:

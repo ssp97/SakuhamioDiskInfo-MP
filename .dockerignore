@@ -1,0 +1,9 @@
+.git/
+.gitignore
+.github/
+.opencode/
+.codex-artifacts/
+bin/
+*.md
+AGENTS.md
+LICENSE
