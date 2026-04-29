@@ -16,6 +16,24 @@ go build -o ./bin/cdi-mp.exe ./cmd/cdi-mp/
 go build -o ./bin/cdi-mp ./cmd/cdi-mp/
 ```
 
+## Debian Package (`.deb`)
+
+```bash
+# Requires: golang-1.25-go, debhelper-compat (= 13), devscripts
+# On Debian/Ubuntu (must be run on Linux):
+chmod +x debian/rules debian/postinst debian/prerm
+dpkg-buildpackage -us -uc -b
+# Output: ../cdi-mp_1.0.0-1_amd64.deb
+```
+
+The `.deb` package creates a `cdi-mp` systemd service running as root. After install:
+
+```bash
+sudo dpkg -i cdi-mp_1.0.0-1_amd64.deb
+sudo systemctl status cdi-mp   # verify running
+# Web UI at http://localhost:8080
+```
+
 ## Project Overview
 
 **CrystalDiskInfo MP** -- 跨平台 Web 版磁盘健康检测工具，直接通过 OS 级 IOCTL/ioctl 读取 S.M.A.R.T./NVMe 数据，无需 smartmontools 等外部工具。内嵌 CrystalDiskInfo 风格前端，支持动漫主题、70+ 语言、温度历史图表。

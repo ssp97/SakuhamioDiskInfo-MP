@@ -237,6 +237,12 @@ func (s *Server) apiThemes(w http.ResponseWriter, r *http.Request) {
 		w.Write(data)
 		return
 	}
+	data, err = StaticFiles.ReadFile("static/themes/themes.json")
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(data)
+		return
+	}
 	s.writeJSON(w, map[string]any{
 		"Default": "Plain",
 		"Themes":  map[string]any{},

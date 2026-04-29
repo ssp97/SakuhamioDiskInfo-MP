@@ -1,0 +1,6 @@
+cdi-mp (1.0.0-1) unstable; urgency=medium
+
+  * Initial Debian package release.
+  * Systemd service with root privileges for S.M.A.R.T. data access.
+
+ -- Sakuhamio <sakuhamio@example.com>  Thu, 30 Apr 2026 00:00:00 +0000

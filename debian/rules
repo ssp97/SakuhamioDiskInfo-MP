@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	CGO_ENABLED=0 go build -buildvcs=false -ldflags="-s -w" -trimpath -o cdi-mp ./cmd/cdi-mp/
+
+override_dh_auto_clean:
+	rm -f cdi-mp
+
+override_dh_auto_test:
+	# No tests to run in packaging context
+	true
+
+override_dh_strip:
+	dh_strip -pcdi-mp --no-automatic-dbgsym

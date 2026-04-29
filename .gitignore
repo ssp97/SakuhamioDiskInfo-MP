@@ -6,3 +6,4 @@
 *.db
 cdi-mp
 cdi-mp.exe
+bin/*.deb

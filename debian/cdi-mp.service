@@ -1,0 +1,21 @@
+[Unit]
+Description=CrystalDiskInfo MP - Web-based disk health monitoring
+Documentation=https://github.com/sakuhamio/SakuhamioDiskInfo-MP
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/cdi-mp -db /var/lib/cdi-mp/sakuhamio.db -addr 0.0.0.0:8080
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_RAWIO
+NoNewPrivileges=no
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/lib/cdi-mp
+StateDirectory=cdi-mp
+StateDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
