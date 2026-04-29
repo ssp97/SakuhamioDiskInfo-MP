@@ -39,7 +39,7 @@ const (
 	ioctlScsiPassThroughDirect = 0x0004D014
 	ioctlScsiPassThrough       = 0x0004D004 // buffered version (CDI approach)
 	scsiDataIn                 = 1
-	scsiDataOut                = 2
+	scsiDataOut                = 0
 	scsiMaxSenseLen            = 32
 
 	ataFlagsDRDYRequired = 0x01
@@ -56,6 +56,39 @@ var (
 	procDeviceIoControl  = kernel32.NewProc("DeviceIoControl")
 	procGetLogicalDrives = kernel32.NewProc("GetLogicalDrives")
 )
+
+type scsiPassThroughHeader struct {
+	Length             uint16
+	ScsiStatus         byte
+	PathID             byte
+	TargetID           byte
+	Lun                byte
+	CdbLength          byte
+	SenseInfoLength    byte
+	DataIn             byte
+	DataTransferLength uint32
+	TimeOutValue       uint32
+	DataBufferOffset   uintptr
+	SenseInfoOffset    uint32
+	Cdb                [16]byte
+}
+
+type scsiPassThroughDirectHeader struct {
+	Length             uint16
+	ScsiStatus         byte
+	PathID             byte
+	TargetID           uint16
+	Lun                byte
+	CdbLength          byte
+	SenseInfoLength    byte
+	DataIn             byte
+	_                  uint16
+	DataTransferLength uint32
+	TimeOutValue       uint32
+	DataBuffer         uintptr
+	SenseInfoOffset    uint32
+	Cdb                [16]byte
+}
 
 type nativeCollector struct{}
 
@@ -198,6 +231,25 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 	identify, err := ataCommand(h, disk.IsUSB, ataCmdIdentify, 0, 0, 0, 0, 0)
 	if err != nil {
 		if !disk.IsUSB {
+			if ctrl, ns, log, usbErr := readUSBDriveNVMe(h); usbErr == nil {
+				size := disk.CapacityBytes
+				parseNVMeIdentify(ctrl, ns, &disk)
+				if size > 0 {
+					disk.CapacityBytes = size
+				}
+				if len(log) > 0 {
+					disk.Raw.SmartHealthLog = cloneBytes(log)
+					disk.SmartState = SmartStateOK
+					disk.LastSmartAt = nowUTC()
+				} else {
+					disk.SmartState = SmartStateError
+					disk.SmartMessage = "NVMe SMART 读取失败"
+				}
+				if disk.Basic.Model != "" {
+					disk.IsUSB = true
+					return disk, nil
+				}
+			}
 			return disk, err
 		}
 		model := strings.TrimSpace(descVendor + " " + descProduct)
@@ -536,32 +588,30 @@ func scsiAtaPassThrough16(h syscall.Handle, command, feature, sectorCount, secto
 //	  DataBufferOffset(4) SenseInfoOffset(4) Cdb[16]           (x86)
 //	+ ULONG Filler + SenseBuf[32] + DataBuf[N]
 func scsiPassThroughBuffered(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]byte, error) {
+	return scsiPassThroughBufferedData(h, cdb, dataIn, make([]byte, dataLen))
+}
+
+func scsiPassThroughBufferedData(h syscall.Handle, cdb []byte, dataIn byte, payload []byte) ([]byte, error) {
 	const senseLen = 32
 
-	// sizeof with MSVC default alignment: 52 x64, 44 x86
-	sptSize := 44
-	cdbOff := 28
-	dataBufOff := 20 // DataBufferOffset field offset in SPT
-	senseOffOff := 24 // SenseInfoOffset field offset in SPT
-	if unsafe.Sizeof(uintptr(0)) == 8 {
-		sptSize = 52
-		cdbOff = 36
-		dataBufOff = 24
-		senseOffOff = 32
-	}
+	sptSize := int(unsafe.Sizeof(scsiPassThroughHeader{}))
+	cdbOff := int(unsafe.Offsetof(scsiPassThroughHeader{}.Cdb))
+	dataBufOff := int(unsafe.Offsetof(scsiPassThroughHeader{}.DataBufferOffset))
+	senseOffOff := int(unsafe.Offsetof(scsiPassThroughHeader{}.SenseInfoOffset))
 
 	// SCSI_PASS_THROUGH_WITH_BUFFERS = SPT + Filler(4) + SenseBuf(32) + DataBuf(N)
-	senseOff := uint32(sptSize + 4)  // SPT + Filler (ULONG)
-	dataOff := senseOff + senseLen    // SPT + Filler + SenseBuf
+	senseOff := uint32(sptSize + 4) // SPT + Filler (ULONG)
+	dataOff := senseOff + senseLen  // SPT + Filler + SenseBuf
+	dataLen := len(payload)
 	totalSize := int(dataOff) + dataLen
 	buf := make([]byte, totalSize)
 
 	binary.LittleEndian.PutUint16(buf[0:], uint16(sptSize))
-	buf[4] = 0               // TargetId (UCHAR)
-	buf[5] = 0               // Lun
-	buf[6] = byte(len(cdb))  // CdbLength
-	buf[7] = senseLen        // SenseInfoLength
-	buf[8] = dataIn          // DataIn (1=read, 0=write)
+	buf[4] = 0              // TargetId (UCHAR)
+	buf[5] = 0              // Lun
+	buf[6] = byte(len(cdb)) // CdbLength
+	buf[7] = senseLen       // SenseInfoLength
+	buf[8] = dataIn         // DataIn (1=read, 0=write)
 	binary.LittleEndian.PutUint32(buf[12:], uint32(dataLen))
 	binary.LittleEndian.PutUint32(buf[16:], 2)
 
@@ -573,8 +623,9 @@ func scsiPassThroughBuffered(h syscall.Handle, cdb []byte, dataIn byte, dataLen 
 	binary.LittleEndian.PutUint32(buf[senseOffOff:], senseOff)
 
 	copy(buf[cdbOff:], cdb)
+	copy(buf[dataOff:], payload)
 
-	if err := deviceIoControl(h, ioctlScsiPassThrough, buf, buf); err != nil {
+	if err := deviceIoControlPartial(h, ioctlScsiPassThrough, buf, uint32(sptSize), buf, uint32(totalSize)); err != nil {
 		return nil, err
 	}
 	result := make([]byte, dataLen)
@@ -592,21 +643,23 @@ func scsiPassThroughBuffered(h syscall.Handle, cdb []byte, dataIn byte, dataLen 
 //
 // DataBuffer is a USER-MODE POINTER to the data area within buf.
 func scsiPassThroughDirect48(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]byte, error) {
+	return scsiPassThroughDirect48Data(h, cdb, dataIn, make([]byte, dataLen))
+}
+
+func scsiPassThroughDirect48Data(h syscall.Handle, cdb []byte, dataIn byte, payload []byte) ([]byte, error) {
 	const senseLen = 32
 
-	headerSize := 48
-	if unsafe.Sizeof(uintptr(0)) == 4 {
-		headerSize = 44
-	}
+	headerSize := int(unsafe.Sizeof(scsiPassThroughDirectHeader{}))
+	dataLen := len(payload)
 	totalSize := headerSize + senseLen + dataLen
 	buf := make([]byte, totalSize)
 
 	binary.LittleEndian.PutUint16(buf[0:], uint16(headerSize)) // Length
 	// buf[4-5] TargetId (USHORT) = 0
-	buf[6] = 0                // Lun
-	buf[7] = byte(len(cdb))   // CdbLength
-	buf[8] = senseLen         // SenseInfoLength
-	buf[9] = dataIn           // DataIn
+	buf[6] = 0              // Lun
+	buf[7] = byte(len(cdb)) // CdbLength
+	buf[8] = senseLen       // SenseInfoLength
+	buf[9] = dataIn         // DataIn
 	binary.LittleEndian.PutUint32(buf[12:], uint32(dataLen))
 	binary.LittleEndian.PutUint32(buf[16:], 2)
 
@@ -625,6 +678,7 @@ func scsiPassThroughDirect48(h syscall.Handle, cdb []byte, dataIn byte, dataLen 
 	}
 	cdbOff := headerSize - 16
 	copy(buf[cdbOff:], cdb)
+	copy(buf[dataOff:], payload)
 
 	if err := deviceIoControl(h, ioctlScsiPassThroughDirect, buf, buf); err != nil {
 		return nil, err
@@ -635,6 +689,7 @@ func scsiPassThroughDirect48(h syscall.Handle, cdb []byte, dataIn byte, dataLen 
 }
 
 type scsiPassFn func(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]byte, error)
+type scsiPassDataFn func(h syscall.Handle, cdb []byte, dataIn byte, payload []byte) ([]byte, error)
 
 // readUSBDriveNVMe attempts to read NVMe Identify + SMART data from a USB-attached
 // NVMe drive using vendor-specific CDBs (matching CrystalDiskInfo approach):
@@ -649,6 +704,14 @@ type scsiPassFn func(h syscall.Handle, cdb []byte, dataIn byte, dataLen int) ([]
 // function to silently fall back to the "USB unsupported" path.
 func readUSBDriveNVMe(h syscall.Handle) (ctrl, ns, log []byte, err error) {
 	fns := []scsiPassFn{scsiPassThroughBuffered, scsiPassThroughDirect48}
+	dataFns := []scsiPassDataFn{scsiPassThroughBufferedData, scsiPassThroughDirect48Data}
+
+	for _, sendData := range dataFns {
+		// JMicron JMS583/JMS586: CDB 0xA1, two-step OUT + DMA-IN
+		if ctrl, ns, log, err = tryJMicronNVMe(h, sendData); err == nil {
+			return
+		}
+	}
 
 	// Try both IOCTL types and both bridge protocols
 	for _, send := range fns {
@@ -662,6 +725,61 @@ func readUSBDriveNVMe(h syscall.Handle) (ctrl, ns, log []byte, err error) {
 		}
 	}
 	return nil, nil, nil, errors.New("USB NVMe passthrough failed")
+}
+
+func tryJMicronNVMe(h syscall.Handle, send scsiPassDataFn) (ctrl, ns, log []byte, err error) {
+	cdbOut := []byte{0xA1, 0x80, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	cdbInIdentify := []byte{0xA1, 0x82, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	cdbInSMART := []byte{0xA1, 0x82, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+
+	identifyCmd := make([]byte, 512)
+	copy(identifyCmd[:4], []byte("NVME"))
+	identifyCmd[8] = 0x06
+	identifyCmd[0x30] = 0x01
+
+	if _, err = send(h, cdbOut, scsiDataOut, identifyCmd); err != nil {
+		return nil, nil, nil, errors.New("JMicron Identify submit failed")
+	}
+	ctrl, err = send(h, cdbInIdentify, scsiDataIn, make([]byte, 4096))
+	if err != nil || len(ctrl) < 512 || cleanASCII(ctrl[24:64]) == "" {
+		return nil, nil, nil, errors.New("JMicron Identify fetch failed")
+	}
+	if sum := byteSum(ctrl[:512]); sum == 0 || sum == 317 {
+		return nil, nil, nil, errors.New("JMicron Identify invalid data")
+	}
+
+	smartCmd := make([]byte, 512)
+	copy(smartCmd[:4], []byte("NVME"))
+	smartCmd[8] = 0x02
+	smartCmd[10] = 0x56
+	smartCmd[12] = 0xFF
+	smartCmd[13] = 0xFF
+	smartCmd[14] = 0xFF
+	smartCmd[15] = 0xFF
+	smartCmd[0x21] = 0x40
+	smartCmd[0x22] = 0x7A
+	smartCmd[0x30] = 0x02
+	smartCmd[0x32] = 0x7F
+
+	if _, err = send(h, cdbOut, scsiDataOut, smartCmd); err != nil {
+		return nil, nil, nil, errors.New("JMicron SMART submit failed")
+	}
+	log, err = send(h, cdbInSMART, scsiDataIn, make([]byte, 512))
+	if err != nil || len(log) < 512 {
+		return nil, nil, nil, errors.New("JMicron SMART fetch failed")
+	}
+	if byteSum(log[:512]) == 0 {
+		return nil, nil, nil, errors.New("JMicron SMART zero data")
+	}
+	return ctrl, nil, log, nil
+}
+
+func byteSum(buf []byte) int {
+	sum := 0
+	for _, b := range buf {
+		sum += int(b)
+	}
+	return sum
 }
 
 // tryRealtekNVMe tries Realtek RTL9210 protocol (CDB 0xE4)
@@ -751,6 +869,10 @@ func ataCommand(h syscall.Handle, isUSB bool, command, feature, sectorCount, sec
 }
 
 func deviceIoControl(h syscall.Handle, code uint32, in, out []byte) error {
+	return deviceIoControlPartial(h, code, in, uint32(len(in)), out, uint32(len(out)))
+}
+
+func deviceIoControlPartial(h syscall.Handle, code uint32, in []byte, inLen uint32, out []byte, outLen uint32) error {
 	var returned uint32
 	var inPtr, outPtr uintptr
 	if len(in) > 0 {
@@ -763,9 +885,9 @@ func deviceIoControl(h syscall.Handle, code uint32, in, out []byte) error {
 		uintptr(h),
 		uintptr(code),
 		inPtr,
-		uintptr(uint32(len(in))),
+		uintptr(inLen),
 		outPtr,
-		uintptr(uint32(len(out))),
+		uintptr(outLen),
 		uintptr(unsafe.Pointer(&returned)),
 		0,
 	)

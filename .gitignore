@@ -1,3 +1,4 @@
+.gocache
 /bin/static/themes/*
 !/bin/static/themes/themes.json
 !/bin/static/themes/Sakuhamio/
