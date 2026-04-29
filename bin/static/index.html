@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sakuhamio DiskInfo MP</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260429-pcie-transfer-1">
 </head>
 <body>
   <div class="app-shell" id="window">
@@ -113,7 +113,13 @@
               <div><dt>型号</dt><dd id="modelName">----</dd></div>
               <div><dt>容量</dt><dd id="capacity">----</dd></div>
               <div><dt>固件版本</dt><dd id="firmware">----</dd></div>
-              <div><dt>序列号</dt><dd id="serial">----</dd></div>
+              <div>
+                <dt>序列号</dt>
+                <dd class="serial-field">
+                  <span id="serial">----</span>
+                  <button class="inline-toggle-button" id="toggleSerial" type="button" aria-pressed="false">显示</button>
+                </dd>
+              </div>
               <div><dt>接口</dt><dd id="protocol">----</dd></div>
               <div><dt>驱动器号</dt><dd id="letters">----</dd></div>
               <div><dt>传输模式</dt><dd id="transfer">----</dd></div>
@@ -177,6 +183,6 @@
     </main>
   </div>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20260429-pcie-transfer-1"></script>
 </body>
 </html>

@@ -37,6 +37,7 @@ type BasicInfo struct {
 	Model          string `json:"model"`
 	Serial         string `json:"serial"`
 	Firmware       string `json:"firmware"`
+	TransferMode   string `json:"transferMode,omitempty"`
 	SmartSupported bool   `json:"smartSupported"`
 	SmartEnabled   bool   `json:"smartEnabled"`
 }

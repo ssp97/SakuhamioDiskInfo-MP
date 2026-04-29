@@ -16,7 +16,7 @@ export function parseNVMe(rawDisk) {
     serial: basic.serial,
     firmware: basic.firmware,
     protocol: "NVMe",
-    transferMode: "PCIe | PCIe",
+    transferMode: basic.transferMode || "PCIe | PCIe",
     standard: nvmeStandard(ctrl) || "NVM Express",
     rotationRate: "SSD",
     capacityBytes: rawDisk.capacityBytes,

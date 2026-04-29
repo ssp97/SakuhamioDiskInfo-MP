@@ -1,5 +1,5 @@
-import { getDisks, refreshAll, refreshDisk, getTemperatureHistory, setApiBase } from "./api.js";
-import { parseDisks } from "./parsers.js";
+import { getDisks, refreshAll, refreshDisk, getTemperatureHistory, setApiBase } from "./api.js?v=20260429-pcie-transfer-1";
+import { parseDisks } from "./parsers.js?v=20260429-pcie-transfer-1";
 
 let rawDisks = [];
 let disks = [];
@@ -9,6 +9,7 @@ let diskPage = 0;
 let apiBase = "";
 let tempChartRange = "24h";
 let tempChartLoading = false;
+let serialVisible = false;
 
 const disksPerPage = 12;
 const themeStorageKey = "theme";
@@ -157,12 +158,19 @@ function setHealthClass(health) {
 function fillFields(disk) {
   const empty = "----";
   $("firmware").textContent = disk?.firmware || empty;
-  $("serial").textContent = maskSerial(disk?.serial);
+  renderSerialField(disk?.serial);
   $("protocol").textContent = disk?.protocol || empty;
   $("transfer").textContent = disk?.transferMode || empty;
   $("letters").textContent = disk ? driveLetters(disk) : empty;
   $("standard").textContent = disk?.standard || empty;
   $("features").textContent = disk ? ((disk.features || []).join(", ") || empty) : empty;
+}
+
+function renderSerialField(serial) {
+  $("serial").textContent = serialVisible ? (serial || "----") : maskSerial(serial);
+  $("toggleSerial").textContent = serialVisible ? "隐藏" : "显示";
+  $("toggleSerial").setAttribute("aria-pressed", serialVisible ? "true" : "false");
+  $("toggleSerial").setAttribute("aria-label", serialVisible ? "隐藏序列号" : "显示序列号");
 }
 
 function renderAttributes(disk) {
@@ -558,6 +566,11 @@ function maskSerial(serial) {
   return "*".repeat(Math.min(24, serial.length));
 }
 
+function toggleSerialVisibility() {
+  serialVisible = !serialVisible;
+  renderSerialField(disks[current]?.serial);
+}
+
 function num(value) {
   return value === 0 ? "0" : (value ? escapeHTML(value) : "");
 }
@@ -625,6 +638,7 @@ $("refresh").addEventListener("click", refreshAllDisks);
 $("wake").addEventListener("click", wakeCurrentDisk);
 $("popup").addEventListener("click", popupWindow);
 $("menuButton").addEventListener("click", () => $("commandMenu").classList.toggle("open"));
+$("toggleSerial").addEventListener("click", toggleSerialVisibility);
 $("themeTrigger").addEventListener("click", (event) => {
   event.stopPropagation();
   toggleThemePicker();

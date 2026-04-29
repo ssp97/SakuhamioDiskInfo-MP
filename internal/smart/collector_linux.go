@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -152,6 +153,7 @@ func readLinuxNVMe(path string, index int) (RawDisk, error) {
 	disk := RawDisk{ID: name, Index: index, Path: path, SmartState: SmartStateUnavailable, IsUSB: isUSB, IsRemovable: isRemovable}
 	disk.DriveLetters = []string{name}
 	parseNVMeIdentify(ctrl, ns, &disk)
+	disk.Basic.TransferMode = linuxNVMeTransferMode(name)
 	if err := nvmeAdmin(f.Fd(), linuxNVMeAdminGetLog, 0xFFFFFFFF, linuxNVMeSmartHealthLog|(127<<16), log); err != nil {
 		disk.SmartState = SmartStateError
 		disk.LastUpdateError = err.Error()
@@ -444,4 +446,49 @@ func detectLinuxUSB(name string) (isUSB bool, isRemovable bool) {
 		isUSB = strings.Contains(target, "/usb")
 	}
 	return
+}
+
+func linuxNVMeTransferMode(name string) string {
+	basePath, err := filepath.EvalSymlinks("/sys/block/" + name + "/device")
+	if err != nil {
+		return ""
+	}
+
+	maxSpeed, maxWidth := linuxPCIeLinkState(basePath, "max")
+	curSpeed, curWidth := linuxPCIeLinkState(basePath, "current")
+	maxMode := formatPCIeTransferMode(maxSpeed, maxWidth)
+	curMode := formatPCIeTransferMode(curSpeed, curWidth)
+
+	switch {
+	case maxMode != "" && curMode != "":
+		return maxMode + " | " + curMode
+	case curMode != "":
+		return curMode + " | " + curMode
+	case maxMode != "":
+		return maxMode + " | " + maxMode
+	default:
+		return ""
+	}
+}
+
+func linuxPCIeLinkState(startPath, prefix string) (speed string, width int) {
+	speedName := prefix + "_link_speed"
+	widthName := prefix + "_link_width"
+
+	for path := startPath; path != "" && path != filepath.Dir(path); path = filepath.Dir(path) {
+		if speed == "" {
+			if data, err := os.ReadFile(filepath.Join(path, speedName)); err == nil {
+				speed = strings.TrimSpace(string(data))
+			}
+		}
+		if width == 0 {
+			if data, err := os.ReadFile(filepath.Join(path, widthName)); err == nil {
+				width, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			}
+		}
+		if speed != "" && width > 0 {
+			return speed, width
+		}
+	}
+	return speed, width
 }

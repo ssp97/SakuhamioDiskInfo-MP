@@ -532,6 +532,39 @@ button:disabled { cursor: default; opacity: 0.45; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.serial-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.serial-field span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.inline-toggle-button {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  font-size: 12px;
+  line-height: 1;
+}
+.inline-toggle-button:hover {
+  border-color: rgba(47, 120, 255, 0.36);
+  color: var(--primary);
+}
+.inline-toggle-button[aria-pressed="true"] {
+  border-color: rgba(47, 120, 255, 0.4);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
 
 .chart-title {
   justify-content: space-between;

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -52,9 +54,24 @@ const (
 )
 
 var (
-	kernel32             = syscall.NewLazyDLL("kernel32.dll")
-	procDeviceIoControl  = kernel32.NewProc("DeviceIoControl")
-	procGetLogicalDrives = kernel32.NewProc("GetLogicalDrives")
+	kernel32                            = syscall.NewLazyDLL("kernel32.dll")
+	procDeviceIoControl                 = kernel32.NewProc("DeviceIoControl")
+	procGetLogicalDrives                = kernel32.NewProc("GetLogicalDrives")
+	setupapiDLL                         = windows.NewLazySystemDLL("setupapi.dll")
+	cfgmgr32DLL                         = windows.NewLazySystemDLL("cfgmgr32.dll")
+	procSetupDiEnumDeviceInterfaces     = setupapiDLL.NewProc("SetupDiEnumDeviceInterfaces")
+	procSetupDiGetDeviceInterfaceDetail = setupapiDLL.NewProc("SetupDiGetDeviceInterfaceDetailW")
+	procCMGetParent                     = cfgmgr32DLL.NewProc("CM_Get_Parent")
+	procCMGetDevNodeProperty            = cfgmgr32DLL.NewProc("CM_Get_DevNode_PropertyW")
+)
+
+var (
+	guidDevInterfaceDisk             = windows.GUID{Data1: 0x53F56307, Data2: 0xB6BF, Data3: 0x11D0, Data4: [8]byte{0x94, 0xF2, 0x00, 0xA0, 0xC9, 0x1E, 0xFB, 0x8B}}
+	pciDevicePropSeed                = windows.DEVPROPGUID{Data1: 0x3ab22e31, Data2: 0x8264, Data3: 0x4b4e, Data4: [8]byte{0x9a, 0xf5, 0xa8, 0xd2, 0xd8, 0xe3, 0x3e, 0x62}}
+	devpkeyPciDeviceCurrentLinkSpeed = windows.DEVPROPKEY{FmtID: pciDevicePropSeed, PID: 9}
+	devpkeyPciDeviceCurrentLinkWidth = windows.DEVPROPKEY{FmtID: pciDevicePropSeed, PID: 10}
+	devpkeyPciDeviceMaxLinkSpeed     = windows.DEVPROPKEY{FmtID: pciDevicePropSeed, PID: 11}
+	devpkeyPciDeviceMaxLinkWidth     = windows.DEVPROPKEY{FmtID: pciDevicePropSeed, PID: 12}
 )
 
 type scsiPassThroughHeader struct {
@@ -88,6 +105,18 @@ type scsiPassThroughDirectHeader struct {
 	DataBuffer         uintptr
 	SenseInfoOffset    uint32
 	Cdb                [16]byte
+}
+
+type deviceInterfaceData struct {
+	Size               uint32
+	InterfaceClassGUID windows.GUID
+	Flags              uint32
+	Reserved           uintptr
+}
+
+type deviceInterfaceDetailData struct {
+	Size       uint32
+	DevicePath uint16
 }
 
 type nativeCollector struct{}
@@ -191,6 +220,7 @@ func readWindowsDisk(index int, h syscall.Handle, force bool, previous *RawDisk)
 	if ctrl, ns, log, err := readNVMeWindows(h); err == nil {
 		size := disk.CapacityBytes
 		parseNVMeIdentify(ctrl, ns, &disk)
+		disk.Basic.TransferMode = windowsNVMeTransferMode(index)
 		if size > 0 {
 			disk.CapacityBytes = size
 		}
@@ -411,6 +441,206 @@ func storageDeviceNumber(h syscall.Handle) (uint32, error) {
 		return 0, err
 	}
 	return binary.LittleEndian.Uint32(buf[4:8]), nil
+}
+
+func windowsNVMeTransferMode(physicalDrive int) string {
+	devInfo, err := windows.SetupDiGetClassDevsEx(&guidDevInterfaceDisk, "", 0, windows.DIGCF_PRESENT|windows.DIGCF_DEVICEINTERFACE, 0, "")
+	if err != nil {
+		return ""
+	}
+	defer devInfo.Close()
+
+	for i := 0; ; i++ {
+		iface, err := setupDiEnumDeviceInterfaces(devInfo, &guidDevInterfaceDisk, uint32(i))
+		if err != nil {
+			if errors.Is(err, windows.ERROR_NO_MORE_ITEMS) {
+				break
+			}
+			continue
+		}
+
+		path, info, err := setupDiGetDeviceInterfaceDetail(devInfo, iface)
+		if err != nil {
+			continue
+		}
+
+		h, err := openDevicePath(path)
+		if err != nil {
+			continue
+		}
+		deviceNumber, err := storageDeviceNumber(syscall.Handle(h))
+		windows.CloseHandle(h)
+		if err != nil || deviceNumber != uint32(physicalDrive) {
+			continue
+		}
+
+		return windowsPCIeTransferMode(info.DevInst)
+	}
+	return ""
+}
+
+func setupDiEnumDeviceInterfaces(devInfo windows.DevInfo, classGUID *windows.GUID, memberIndex uint32) (*deviceInterfaceData, error) {
+	data := &deviceInterfaceData{Size: uint32(unsafe.Sizeof(deviceInterfaceData{}))}
+	r1, _, e1 := procSetupDiEnumDeviceInterfaces.Call(
+		uintptr(devInfo),
+		0,
+		uintptr(unsafe.Pointer(classGUID)),
+		uintptr(memberIndex),
+		uintptr(unsafe.Pointer(data)),
+	)
+	if r1 == 0 {
+		if e1 != nil && e1 != syscall.Errno(0) {
+			return nil, e1
+		}
+		return nil, syscall.EINVAL
+	}
+	return data, nil
+}
+
+func setupDiGetDeviceInterfaceDetail(devInfo windows.DevInfo, iface *deviceInterfaceData) (string, *windows.DevInfoData, error) {
+	var requiredSize uint32
+	info := &windows.DevInfoData{}
+	*(*uint32)(unsafe.Pointer(info)) = uint32(unsafe.Sizeof(*info))
+
+	r1, _, e1 := procSetupDiGetDeviceInterfaceDetail.Call(
+		uintptr(devInfo),
+		uintptr(unsafe.Pointer(iface)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&requiredSize)),
+		uintptr(unsafe.Pointer(info)),
+	)
+	if r1 == 0 && !errors.Is(e1, windows.ERROR_INSUFFICIENT_BUFFER) {
+		if e1 != nil && e1 != syscall.Errno(0) {
+			return "", nil, e1
+		}
+		return "", nil, syscall.EINVAL
+	}
+	if requiredSize == 0 {
+		return "", nil, syscall.EINVAL
+	}
+
+	buf := make([]byte, requiredSize)
+	detail := (*deviceInterfaceDetailData)(unsafe.Pointer(&buf[0]))
+	detail.Size = deviceInterfaceDetailDataSize()
+	info = &windows.DevInfoData{}
+	*(*uint32)(unsafe.Pointer(info)) = uint32(unsafe.Sizeof(*info))
+
+	r1, _, e1 = procSetupDiGetDeviceInterfaceDetail.Call(
+		uintptr(devInfo),
+		uintptr(unsafe.Pointer(iface)),
+		uintptr(unsafe.Pointer(detail)),
+		uintptr(requiredSize),
+		uintptr(unsafe.Pointer(&requiredSize)),
+		uintptr(unsafe.Pointer(info)),
+	)
+	if r1 == 0 {
+		if e1 != nil && e1 != syscall.Errno(0) {
+			return "", nil, e1
+		}
+		return "", nil, syscall.EINVAL
+	}
+
+	pathPtr := (*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(detail)) + unsafe.Offsetof(deviceInterfaceDetailData{}.DevicePath)))
+	return windows.UTF16PtrToString(pathPtr), info, nil
+}
+
+func deviceInterfaceDetailDataSize() uint32 {
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		return 8
+	}
+	return 6
+}
+
+func openDevicePath(path string) (windows.Handle, error) {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	return windows.CreateFile(pathPtr, 0, fileShareRead|fileShareWrite, nil, openExisting, 0, 0)
+}
+
+func windowsPCIeTransferMode(devInst windows.DEVINST) string {
+	for devInst != 0 {
+		maxSpeed, maxSpeedOK := cmGetDevNodeUint32(devInst, &devpkeyPciDeviceMaxLinkSpeed)
+		maxWidth, maxWidthOK := cmGetDevNodeUint32(devInst, &devpkeyPciDeviceMaxLinkWidth)
+		curSpeed, curSpeedOK := cmGetDevNodeUint32(devInst, &devpkeyPciDeviceCurrentLinkSpeed)
+		curWidth, curWidthOK := cmGetDevNodeUint32(devInst, &devpkeyPciDeviceCurrentLinkWidth)
+
+		maxMode := ""
+		curMode := ""
+		if maxSpeedOK || maxWidthOK {
+			maxMode = formatPCIeTransferMode(pcieSpeedName(maxSpeed), int(maxWidth))
+		}
+		if curSpeedOK || curWidthOK {
+			curMode = formatPCIeTransferMode(pcieSpeedName(curSpeed), int(curWidth))
+		}
+		switch {
+		case maxMode != "" && curMode != "":
+			return maxMode + " | " + curMode
+		case curMode != "":
+			return curMode + " | " + curMode
+		case maxMode != "":
+			return maxMode + " | " + maxMode
+		}
+
+		parent, err := cmGetParent(devInst)
+		if err != nil || parent == devInst {
+			break
+		}
+		devInst = parent
+	}
+	return ""
+}
+
+func cmGetParent(devInst windows.DEVINST) (windows.DEVINST, error) {
+	var parent windows.DEVINST
+	r1, _, _ := procCMGetParent.Call(
+		uintptr(unsafe.Pointer(&parent)),
+		uintptr(devInst),
+		0,
+	)
+	if windows.CONFIGRET(r1) != windows.CR_SUCCESS {
+		return 0, fmt.Errorf("CM_Get_Parent failed: %#x", uint32(r1))
+	}
+	return parent, nil
+}
+
+func cmGetDevNodeUint32(devInst windows.DEVINST, key *windows.DEVPROPKEY) (uint32, bool) {
+	var propertyType windows.DEVPROPTYPE
+	var value uint32
+	size := uint32(unsafe.Sizeof(value))
+	r1, _, _ := procCMGetDevNodeProperty.Call(
+		uintptr(devInst),
+		uintptr(unsafe.Pointer(key)),
+		uintptr(unsafe.Pointer(&propertyType)),
+		uintptr(unsafe.Pointer(&value)),
+		uintptr(unsafe.Pointer(&size)),
+		0,
+	)
+	if windows.CONFIGRET(r1) != windows.CR_SUCCESS || propertyType != windows.DEVPROP_TYPE_UINT32 {
+		return 0, false
+	}
+	return value, true
+}
+
+func pcieSpeedName(value uint32) string {
+	switch value {
+	case 1:
+		return "2.5 GT/s"
+	case 2:
+		return "5.0 GT/s"
+	case 3:
+		return "8.0 GT/s"
+	case 4:
+		return "16.0 GT/s"
+	case 5:
+		return "32.0 GT/s"
+	case 6:
+		return "64.0 GT/s"
+	default:
+		return ""
+	}
 }
 
 func readNVMeWindows(h syscall.Handle) ([]byte, []byte, []byte, error) {
