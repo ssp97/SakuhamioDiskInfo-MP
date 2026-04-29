@@ -74,7 +74,6 @@ jobs:
 
           # Generate control file with correct architecture
           sed "s/^Architecture:.*/Architecture: ${DEBARCH}/" debian/control \
-            | grep -v '^Build-Depends' \
             > "${pkg}/DEBIAN/control"
 
           chmod 755 "${pkg}/DEBIAN/postinst"
