@@ -8,7 +8,7 @@ Homepage: https://github.com/sakuhamio/SakuhamioDiskInfo-MP
 Rules-Requires-Root: no
 
 Package: cdi-mp
-Architecture: amd64
+Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: CrystalDiskInfo MP - Web-based disk health monitoring tool
  CrystalDiskInfo MP is a cross-platform web-based disk health monitoring

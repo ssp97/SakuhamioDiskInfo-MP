@@ -1,0 +1,118 @@
+name: Build .deb Package
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
+      - debian/**
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload .deb to (optional)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    name: .deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            debarch: amd64
+          - arch: arm64
+            goarch: arm64
+            debarch: arm64
+          - arch: armhf
+            goarch: arm
+            goarm: "7"
+            debarch: armhf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Go binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          go build -trimpath -ldflags="-s -w" -o build/cdi-mp ./cmd/cdi-mp
+
+      - name: Build .deb package
+        env:
+          DEBARCH: ${{ matrix.debarch }}
+        run: |
+          # Extract version from changelog
+          version=$(head -1 debian/changelog | sed 's/.*(\(.*\)).*/\1/')
+          pkg="build/cdi-mp_${version}_${DEBARCH}"
+
+          mkdir -p "${pkg}/DEBIAN"
+          mkdir -p "${pkg}/usr/bin"
+          mkdir -p "${pkg}/lib/systemd/system"
+
+          cp build/cdi-mp "${pkg}/usr/bin/"
+          cp debian/cdi-mp.service "${pkg}/lib/systemd/system/"
+          cp debian/postinst "${pkg}/DEBIAN/"
+          cp debian/prerm "${pkg}/DEBIAN/"
+
+          # Generate control file with correct architecture
+          sed "s/^Architecture:.*/Architecture: ${DEBARCH}/" debian/control \
+            | grep -v '^Build-Depends' \
+            > "${pkg}/DEBIAN/control"
+
+          chmod 755 "${pkg}/DEBIAN/postinst"
+          chmod 755 "${pkg}/DEBIAN/prerm"
+          chmod 755 "${pkg}/usr/bin/cdi-mp"
+
+          dpkg-deb --build --root-owner-group "${pkg}"
+          mkdir -p dist
+          mv "${pkg}.deb" dist/
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdi-mp-${{ matrix.arch }}.deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Upload to Release
+    if: github.event.inputs.tag != ''
+    needs: build-deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload .deb to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.deb --clobber
+          else
+            echo "Release '$tag' does not exist. Create it first, then re-run."
+            exit 1
+          fi
